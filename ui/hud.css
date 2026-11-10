@@ -253,45 +253,67 @@
 /* ==========================================================================
    タッチ UI（ui/input.js）・タイトル・リザルト（main.js）
    ========================================================================== */
-.touch-ui { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
-.touch-ui button { pointer-events: auto; -webkit-tap-highlight-color: transparent; font-family: var(--hud-serif); color: var(--hud-cream); background: var(--hud-glass); border: 1px solid var(--hud-gold-line); border-radius: 50%; display: none; }
-.touch-ui .drift { position: absolute; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: calc(100px + env(safe-area-inset-bottom, 0px)); width: 92px; height: 92px; font-size: 16px; font-weight: 700; letter-spacing: 0.1em; line-height: 1.1; }
-.touch-ui .drift span { display: block; font-style: italic; font-weight: 500; font-size: 12px; color: var(--hud-cream-dim); }
-.touch-ui .drift.on { background: rgba(201,162,39,0.55); color: #1a1409; }
-.touch-ui .retry { position: absolute; left: calc(16px + env(safe-area-inset-left, 0px)); top: calc(96px + env(safe-area-inset-top, 0px)); width: 40px; height: 40px; font-size: 16px; font-weight: 700; }
-@media (pointer: coarse) { .touch-ui button { display: block; } }
-.touch-ui.on button { display: block; }
+.touch-ui { position: fixed; inset: 0; pointer-events: none; z-index: 20; display: none; }
+.touch-ui.on { display: block; }
+.touch-ui .tgroup { position: absolute; display: flex; pointer-events: auto; touch-action: none; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
+.touch-ui .tg-steer { left: calc(14px + env(safe-area-inset-left, 0px)); gap: 0; }
+.touch-ui .tg-drive { right: calc(14px + env(safe-area-inset-right, 0px)); align-items: flex-end; }
+.touch-ui .tbtn {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: var(--hud-glass); border: 1px solid var(--hud-gold-line); box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent; transition: background 0.06s, transform 0.06s, border-color 0.06s;
+  font-family: var(--hud-serif); color: var(--hud-cream);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+.touch-ui .tbtn * { pointer-events: none; }
+.touch-ui .tbtn .ico { color: var(--hud-gold-soft); font-size: 26px; line-height: 1; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.touch-ui .tbtn .lbl { font-size: 13px; font-weight: 600; letter-spacing: 0.12em; color: var(--hud-cream-dim); }
+.touch-ui .tbtn.on { background: rgba(201,162,39,0.6); border-color: var(--hud-gold); transform: scale(0.96); }
+.touch-ui .tbtn.on .ico, .touch-ui .tbtn.on .lbl { color: #1a1409; text-shadow: none; }
+/* 左手: 横長の2つを隙間なく。指を滑らせて左右を切り替えられる */
+.touch-ui .tb-left, .touch-ui .tb-right { width: 92px; height: 84px; }
+.touch-ui .tb-left  { border-radius: 42px 6px 6px 42px; border-right-width: 0.5px; }
+.touch-ui .tb-right { border-radius: 6px 42px 42px 6px; border-left-width: 0.5px; }
+/* 右手: 鞭（いちばん大きい、親指の休む位置）・その左に手綱・左上にドリフト */
+.touch-ui .tb-up   { width: 96px; height: 96px; border-radius: 50%; }
+.touch-ui .tb-down { width: 74px; height: 74px; border-radius: 50%; margin-right: -4px; }
+.touch-ui .tb-hand { position: absolute; right: 70px; bottom: 104px; width: 70px; height: 44px; border-radius: 22px; }
+.touch-ui .tb-hand .lbl { color: var(--hud-cream); }
+.touch-ui .retry {
+  position: absolute; pointer-events: auto; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  width: 40px; height: 40px; border-radius: 50%; font-size: 20px; line-height: 1;
+  font-family: var(--hud-num); color: var(--hud-cream-dim); background: var(--hud-glass); border: 1px solid var(--hud-glass-edge);
+  -webkit-tap-highlight-color: transparent;
+}
+@media (max-height: 420px) {
+  .touch-ui .tb-left, .touch-ui .tb-right { width: 80px; height: 72px; }
+  .touch-ui .tb-up { width: 84px; height: 84px; }
+  .touch-ui .tb-down { width: 64px; height: 64px; }
+  .touch-ui .tb-hand { bottom: 92px; right: 62px; }
+}
 
-/* ---- 十字キー: 画面左下に固定位置。触った場所を中心にせず、ボタン自体が固定。
-   4 ボタンの当たり判定（.dbtn）はアイコンの見た目より一回り大きく、隣同士が角で少し重なる
-   （上下左右のボタンの境界/角に当たり判定の重なりゾーンがあるので、1本の指のスライドや2本指で斜め押しができる） */
-.touch-ui .dpad {
-  position: absolute; left: calc(14px + env(safe-area-inset-left, 0px)); bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-  width: 172px; height: 172px; display: none; touch-action: none;
+/* タッチのときは、下の角の表示（客・歩様）をボタンの上へ逃がして小さくする */
+body.touch-mode .hud-passenger, body.touch-mode .hud-gait {
+  bottom: auto; top: calc(var(--hud-pad) + 92px); transform: scale(0.78);
 }
-@media (pointer: coarse) { .touch-ui .dpad { display: block; } }
-.touch-ui.on .dpad { display: block; }
-.touch-ui .dbtn {
-  position: absolute; pointer-events: auto; touch-action: none;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--hud-glass); border: 1px solid var(--hud-gold-line);
-  -webkit-tap-highlight-color: transparent; transition: background 0.08s, border-color 0.08s;
+body.touch-mode .hud-passenger { transform-origin: left top; }
+body.touch-mode .hud-gait { transform-origin: right top; }
+@media (max-height: 460px), (max-width: 560px) {
+  body.touch-mode .hud-passenger, body.touch-mode .hud-gait { top: calc(var(--hud-pad) + 70px); transform: scale(0.7); }
+  body.touch-mode .hud-quality { display: none; }
 }
-.touch-ui .dbtn .ico { color: var(--hud-gold-soft); font-size: 20px; line-height: 1; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
-.touch-ui .dbtn.on { background: rgba(201,162,39,0.55); border-color: var(--hud-gold); }
-.touch-ui .dbtn.on .ico { color: #1a1409; }
-/* 2026-10-03 主ループ: 当たり判定の寸法ミス修正。92px（パッド172pxの半分86pxを超える）を「左右」の幅に使っていたため、
-   「上」ボタンの中心点そのものが「左」の当たり判定にも入ってしまっていた（測定: tests/_flicker_steer.html で
-   上ボタン中心を押しただけで left も同時に on になっていた）。中心線を超えないよう、軸沿いの奥行きは76pxに絞り、
-   直交方向の幅92pxとの重なりは角だけ（約36×36px）に留める */
-.touch-ui .dbtn-up    { left: 40px; top: 0;   width: 92px; height: 76px; border-radius: 14px 14px 4px 4px; }
-.touch-ui .dbtn-down  { left: 40px; bottom: 0; width: 92px; height: 76px; border-radius: 4px 4px 14px 14px; }
-.touch-ui .dbtn-left  { top: 40px; left: 0;   width: 76px; height: 92px; border-radius: 14px 4px 4px 14px; }
-.touch-ui .dbtn-right { top: 40px; right: 0;  width: 76px; height: 92px; border-radius: 4px 14px 14px 4px; }
-.touch-ui .dbtn-up .ico    { margin-bottom: 34px; }
-.touch-ui .dbtn-down .ico  { margin-top: 34px; }
-.touch-ui .dbtn-left .ico  { margin-right: 34px; }
-.touch-ui .dbtn-right .ico { margin-left: 34px; }
+
+@media (max-width: 560px) and (orientation: portrait) {
+  body.touch-mode .hud-passenger, body.touch-mode .hud-gait { top: calc(var(--hud-pad) + 150px); }
+}
+
+/* タイトルの操作説明もタッチ用に差し替える */
+.title-card .hint-touch { display: none; }
+body.touch-mode .title-card .hint { display: none; }
+body.touch-mode .title-card .hint-touch { display: block; }
+
+/* 長押しで文字選択・コピーのメニューを出さない */
+html, body, body * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 
 .title-card {
   position: fixed; left: 50%; top: 30%; transform: translate(-50%, -50%);

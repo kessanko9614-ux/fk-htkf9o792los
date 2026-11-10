@@ -1,4 +1,4 @@
-// ui/input.js — キーボード（↑↓←→ / WASD / Space / R / M）とタッチ（左下固定の半透明十字キー + 右下「ドリフト」）
+// ui/input.js — キーボード（↑↓←→ / WASD / Space / R / M）とタッチ（左手 ◀▶、右手 鞭・手綱・ドリフト）
 //
 //   const input = createInput(rootEl);
 //   const i = input.read();   // { up, down, left, right, hand }（sim の step に渡す形）+ retry / mute は onRetry / onMute コールバック
@@ -27,81 +27,83 @@ export function createInput(root) {
   addEventListener('keyup', (e) => { const k = codeMap[e.code]; if (k) keys.delete(k); });
   addEventListener('blur', () => keys.clear());
 
-  // ---- タッチ UI
+  // ---- タッチ UI（2026-11-09 作り直し）
+  // 天才さん「操作ボタンも変だった」。前の十字キーは左下で「客」の表示に、ドリフトは右下で「歩様」の表示にかぶっていた。
+  // スマホのレースゲームでよくある並びにする: 左手 = ◀ ▶（曲がる）、右手 = 鞭（進む）・手綱（止まる）・ドリフト。
+  // 同じ手のボタンはすき間なく並べ、指を滑らせると隣に乗り換えられる（押したまま ◀ → ▶ など）。
+  // 指ごとに「いま乗っているボタン」を持つので、左右の手で同時に押せる。
   const ui = document.createElement('div');
   ui.className = 'touch-ui';
   ui.innerHTML = `
-    <div class="dpad" id="touch-dpad">
-      <div class="dbtn dbtn-up" data-dir="up"><span class="ico">▲</span></div>
-      <div class="dbtn dbtn-down" data-dir="down"><span class="ico">▼</span></div>
-      <div class="dbtn dbtn-left" data-dir="left"><span class="ico">◀</span></div>
-      <div class="dbtn dbtn-right" data-dir="right"><span class="ico">▶</span></div>
+    <div class="tgroup tg-steer">
+      <div class="tbtn tb-left" data-key="left"><span class="ico">◀</span></div>
+      <div class="tbtn tb-right" data-key="right"><span class="ico">▶</span></div>
     </div>
-    <button class="drift" id="touch-drift" type="button">ドリフト<span>Drift</span></button>
-    <button class="retry" id="touch-retry" type="button">R</button>`;
+    <div class="tgroup tg-drive">
+      <div class="tbtn tb-hand" data-key="hand"><span class="lbl">ドリフト</span></div>
+      <div class="tbtn tb-down" data-key="down"><span class="ico">▼</span><span class="lbl">手綱</span></div>
+      <div class="tbtn tb-up" data-key="up"><span class="ico">▲</span><span class="lbl">鞭</span></div>
+    </div>
+    <button class="retry" id="touch-retry" type="button" aria-label="やり直し">↺</button>`;
   root.appendChild(ui);
 
-  const dpad = ui.querySelector('#touch-dpad');
-  const dirEls = {
-    up: dpad.querySelector('.dbtn-up'), down: dpad.querySelector('.dbtn-down'),
-    left: dpad.querySelector('.dbtn-left'), right: dpad.querySelector('.dbtn-right'),
-  };
-  const dirState = { up: false, down: false, left: false, right: false };
-  const dpadPointers = new Map(); // pointerId -> Set(dir) （その指が今乗っているボタン。複数同時可）
+  const btnEls = {};
+  for (const el of ui.querySelectorAll('.tbtn')) btnEls[el.dataset.key] = el;
+  const tState = { up: false, down: false, left: false, right: false, hand: false };
+  const pointers = new Map(); // pointerId -> { group, keys:Set }
 
-  function dirsAtPoint(x, y) {
-    const els = typeof document.elementsFromPoint === 'function' ? document.elementsFromPoint(x, y) : [document.elementFromPoint(x, y)];
+  function keysAt(x, y, group) {
     const s = new Set();
-    for (const el of els) { const d = el && el.dataset && el.dataset.dir; if (d) s.add(d); }
+    for (const el of document.elementsFromPoint(x, y)) {
+      const k = el.dataset && el.dataset.key;
+      if (k && group.contains(el)) s.add(k);
+    }
     return s;
   }
-  function recomputeDirState() {
-    const next = { up: false, down: false, left: false, right: false };
-    for (const set of dpadPointers.values()) for (const d of set) next[d] = true;
-    for (const d of Object.keys(dirState)) {
-      if (dirState[d] !== next[d]) { dirState[d] = next[d]; dirEls[d].classList.toggle('on', next[d]); }
+  function recompute() {
+    const next = { up: false, down: false, left: false, right: false, hand: false };
+    for (const p of pointers.values()) for (const k of p.keys) next[k] = true;
+    for (const k of Object.keys(tState)) {
+      if (tState[k] !== next[k]) {
+        tState[k] = next[k]; btnEls[k].classList.toggle('on', next[k]);
+        if (next[k] && navigator.vibrate) { try { navigator.vibrate(8); } catch {} }
+      }
     }
   }
-  function onDpadDown(e) {
-    try { dpad.setPointerCapture(e.pointerId); } catch {}
-    dpadPointers.set(e.pointerId, dirsAtPoint(e.clientX, e.clientY));
-    recomputeDirState();
-    api.touch = true; ui.classList.add('on');
-    e.preventDefault();
+  function useTouch() { if (!api.touch) { api.touch = true; ui.classList.add('on'); document.body.classList.add('touch-mode'); } }
+  for (const group of ui.querySelectorAll('.tgroup')) {
+    group.addEventListener('pointerdown', (e) => {
+      try { group.setPointerCapture(e.pointerId); } catch {}
+      pointers.set(e.pointerId, { group, keys: keysAt(e.clientX, e.clientY, group) });
+      recompute(); useTouch(); e.preventDefault();
+    });
+    group.addEventListener('pointermove', (e) => {
+      const p = pointers.get(e.pointerId); if (!p) return;
+      p.keys = keysAt(e.clientX, e.clientY, group); recompute(); e.preventDefault();
+    });
+    const up = (e) => { if (pointers.delete(e.pointerId)) recompute(); };
+    group.addEventListener('pointerup', up);
+    group.addEventListener('pointercancel', up);
+    group.addEventListener('lostpointercapture', up);
   }
-  function onDpadMove(e) {
-    if (!dpadPointers.has(e.pointerId)) return;
-    dpadPointers.set(e.pointerId, dirsAtPoint(e.clientX, e.clientY));
-    recomputeDirState();
-    e.preventDefault();
-  }
-  function onDpadUp(e) {
-    if (!dpadPointers.has(e.pointerId)) return;
-    dpadPointers.delete(e.pointerId);
-    recomputeDirState(); // 2026-10-03: 離した方向だけ止める（以前の仮想スティックは離した直後に自動で手綱＝減速を入れていたが、
-                          // 固定十字キーでは「下」ボタンを押していない限り減速しない。やめる操作は単純に止まるだけにする）
-  }
-  dpad.addEventListener('pointerdown', onDpadDown);
-  dpad.addEventListener('pointermove', onDpadMove);
-  dpad.addEventListener('pointerup', onDpadUp);
-  dpad.addEventListener('pointercancel', onDpadUp);
-  dpad.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  let drift = false;
-  const driftBtn = ui.querySelector('#touch-drift');
-  driftBtn.addEventListener('touchstart', (e) => { drift = true; driftBtn.classList.add('on'); api.touch = true; ui.classList.add('on'); e.preventDefault(); e.stopPropagation(); }, { passive: false });
-  driftBtn.addEventListener('touchend', (e) => { drift = false; driftBtn.classList.remove('on'); e.preventDefault(); e.stopPropagation(); });
-  driftBtn.addEventListener('touchcancel', () => { drift = false; driftBtn.classList.remove('on'); });
   ui.querySelector('#touch-retry').addEventListener('click', () => api.onRetry?.());
-  driftBtn.addEventListener('click', (e) => e.preventDefault());
+  if (matchMedia('(pointer: coarse)').matches || new URLSearchParams(location.search).has('touch')) useTouch(); // ?touch で PC でも出す（撮影用）
+  // 画面が裏に回ったら全部離す（押しっぱなしで戻ってこないように）
+  addEventListener('visibilitychange', () => { if (document.hidden) { pointers.clear(); recompute(); } });
+
+  // 長押しで文字選択・コピーのメニュー・拡大鏡が出ないようにする（天才さん「コピペもできないようにしないと長押し対応しない」）
+  for (const ev of ['contextmenu', 'selectstart', 'gesturestart', 'dblclick']) {
+    document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+  }
+  document.addEventListener('touchstart', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
   function read() {
     return {
-      up: keys.has('up') || dirState.up,
-      down: keys.has('down') || dirState.down,
-      left: keys.has('left') || dirState.left,
-      right: keys.has('right') || dirState.right,
-      hand: keys.has('hand') || drift,
+      up: keys.has('up') || tState.up,
+      down: keys.has('down') || tState.down,
+      left: keys.has('left') || tState.left,
+      right: keys.has('right') || tState.right,
+      hand: keys.has('hand') || tState.hand,
     };
   }
   return Object.assign(api, { read, keys, element: ui });
