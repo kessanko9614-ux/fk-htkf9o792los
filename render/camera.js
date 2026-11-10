@@ -189,7 +189,8 @@ export function createFollowCamera(camera, opts = {}) {
     // FOV は速さの 2 乗で効かせる
     const fovTarget = THREE.MathUtils.lerp(P.fovBase, P.fovMax, Math.pow(r, P.fovPow));
     fov += (fovTarget - fov) * (dt > 0 ? 1 - Math.exp(-4 * dt) : 1);
-    if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const fovShown = fov + (shake?.fov || 0);   // 2026-11-10: 衝突の一瞬の広がり（fx.js の kick）
+    if (Math.abs(camera.fov - fovShown) > 0.01) { camera.fov = fovShown; camera.updateProjectionMatrix(); }
   }
 
   function update(dt, player, { shake = null } = {}) {

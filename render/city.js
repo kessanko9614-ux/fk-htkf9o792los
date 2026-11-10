@@ -86,6 +86,8 @@ const FACADE = {
 };
 
 const WALL_T = 0.45;
+// CITY2 第 4 周: スマホ（mobile/low）の段。buildCity が設定し、小物の影・木の近景距離を切り替える
+let LITE_MODE = false;
 
 function mulberry(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
@@ -444,7 +446,7 @@ function buildBuildingBucket(b, materials, rng, { lite = false, boxOnly = false 
   }
   if (style.dentils && !lite) {
     const dy = topY - cz + cz / 3 * 2 - 0.08;
-    const pitch = 0.42; // 2026-10-14 見た目の質: 0.32 → 0.42（三角形を減らす。歯飾りは遠目には帯に見える）
+    const pitch = LITE_MODE ? 0.84 : 0.42; // 2026-10-14 見た目の質: 0.32 → 0.42（三角形を減らす。歯飾りは遠目には帯に見える）。第 4 周: スマホは 0.84
     for (const face of faces) {
       const fw = face === 'front' || face === 'back' ? w : d;
       const M = faceMatrix(face, w, d);
@@ -503,8 +505,10 @@ function buildFacade(B, style, floors, fw, M, ctx) {
   const hasArcade = style.arcade && isFront;
   // CITY2 第 3 周: リザリート（中央 3 ベイの張り出し 0.55m）。幅 26m 以上・5 ベイ以上の面（詳細版）。「窓の格子が並ぶ平らな壁」を割る
   // t=20 の「大きな壁」は幅 15〜20m の棟が 4〜5 棟並んだもの（26m 以上の棟は無かった）。幅 18m 以上・4 ベイ以上なら中央を張り出す。屋根の上の飾りは 26m 以上だけ
-  const riz = !hasArcade && fw > 18 && nBays >= 4 ? (fw > 26 ? 0.55 : 0.4) : 0;
-  const inRiz = (i) => riz > 0 && Math.abs(i - centerBay) <= 1;
+  // 第 4 周: 幅 18m では 3 ベイにしかならず（端の壁柱が広い）条件に掛からなかった → 3 ベイ以上。5 ベイ未満は中央 1 ベイだけ張り出す
+  const riz = !hasArcade && fw > 14 && nBays >= 3 ? (fw > 26 ? 0.55 : 0.4) : 0;
+  const rizHalf = nBays >= 5 ? 1 : 0;
+  const inRiz = (i) => riz > 0 && Math.abs(i - centerBay) <= rizHalf;
   const Mr = riz ? M.clone().multiply(new THREE.Matrix4().makeTranslation(0, 0, riz)) : M;
   const M0 = M;
 
@@ -527,7 +531,7 @@ function buildFacade(B, style, floors, fw, M, ctx) {
     }
     for (let i = 0; i < nBays; i++) {
       const u = -fw / 2 + endPier + bay * (i + 0.5);
-      const isDoor = ground && i === centerBay && isFront && !hasArcade;
+      const isDoor = ground && i === centerBay && !hasArcade;   // 第 4 周: 入口の扉を正面以外の面（広場側など）にも
       const rz = inRiz(i); const M = rz ? Mr : M0; const Tb = T + (rz ? riz : 0);   // リザリートのベイは面ごと前へ。壁は厚くして元の壁まで届かせる
       // 窓の左右の壁柱（隣のベイと共有するので右側だけ。左端は最初のベイだけ。リザリートのベイは左側も自分で持つ）
       const pierW = bay - ww;
@@ -552,8 +556,8 @@ function buildFacade(B, style, floors, fw, M, ctx) {
         if (ground && !isDoor) { B.add('shopGlass', plane(ww - 0.16, wh - 0.16, u, wy, -0.26), M); B.add('dark', plane(ww, wh, u, wy, -T + 0.06), M); B.add('sign', plane(ww + 0.3, 0.55, u, y0 + sill + wh + 0.35, 0.06), M, ctx.signColor); }
         else if (isDoor) { B.add('wood', translated(box(ww - 0.3, wh - 0.2, 0.08), u, y0 + (wh - 0.2) / 2, -0.32), M); }
         else {
-          B.add('trim', plane(ww, wh, u, wy, -0.18), M, trimColor); B.add('glass', plane(ww - 0.18, wh - 0.18, u, wy, -0.17), M); B.add('trim', translated(box(ww + 0.3, 0.1, 0.22), u, y0 + sill - 0.05, 0.04), M, trimColor);
-          if (!top) B.add('trim', translated(box(ww + 0.5, 0.3, 0.24), u, y0 + sill + wh + 0.17, 0.07), M, trimColor);
+          B.add('trim', plane(ww, wh, u, wy, -0.18), M, trimColor); B.add('glass', plane(ww - 0.18, wh - 0.18, u, wy, -0.17), M); B.add('trim', plane(ww + 0.3, 0.12, u, y0 + sill - 0.06, 0.15), M, trimColor);
+          if (!top) B.add('trim', plane(ww + 0.5, 0.3, u, y0 + sill + wh + 0.17, 0.19), M, trimColor);   // 第 4 周: 箱 → 板（三角形 1/6）
           if (bel && (style.pediments || style.dentils)) B.add('trim', pedimentGeo(ww + 0.7, 0.7, 0.3, u, y0 + sill + wh + 0.34), M, trimColor);
         }
         continue;
@@ -643,19 +647,23 @@ function buildFacade(B, style, floors, fw, M, ctx) {
           B.add('matte', new THREE.OctahedronGeometry(0.16, 0).scale(ww * 2.6, 0.5, 1.1).translate(u, y0 + sill + 0.22, 0.2), M, new THREE.Color(0x4f7a3a));
         }
         const fr = 0.09;
-        B.add('trim', translated(box(fr, wh, 0.07), u - ww / 2 + fr / 2, wy, -0.19), M, trimColor);
-        B.add('trim', translated(box(fr, wh, 0.07), u + ww / 2 - fr / 2, wy, -0.19), M, trimColor);
-        B.add('trim', translated(box(ww, fr, 0.07), u, y0 + sill + wh - fr / 2, -0.19), M, trimColor);
-        B.add('trim', translated(box(ww, fr, 0.07), u, y0 + sill + fr / 2, -0.19), M, trimColor);
-        B.add('trim', translated(box(0.06, wh, 0.05), u, wy, -0.2), M, trimColor);
-        B.add('trim', translated(box(ww, 0.06, 0.05), u, y0 + sill + wh * 0.62, -0.2), M, trimColor);
+        if (LITE_MODE) {
+          B.add('trim', plane(ww, wh, u, wy, -0.225), M, trimColor);   // 第 4 周: スマホは枠を 1 枚の板（ガラスの後ろ。4 箱 48 → 2 三角形）
+        } else {
+          B.add('trim', translated(box(fr, wh, 0.07), u - ww / 2 + fr / 2, wy, -0.19), M, trimColor);
+          B.add('trim', translated(box(fr, wh, 0.07), u + ww / 2 - fr / 2, wy, -0.19), M, trimColor);
+          B.add('trim', translated(box(ww, fr, 0.07), u, y0 + sill + wh - fr / 2, -0.19), M, trimColor);
+          B.add('trim', translated(box(ww, fr, 0.07), u, y0 + sill + fr / 2, -0.19), M, trimColor);
+        }
+        B.add('trim', plane(0.06, wh, u, wy, -0.2), M, trimColor);   // 第 4 周: 十字の桟は板（箱の 1/6）
+        B.add('trim', plane(ww, 0.06, u, y0 + sill + wh * 0.62, -0.2), M, trimColor);
         // 窓台
         B.add('trim', translated(box(ww + 0.3, 0.1, 0.22), u, y0 + sill - 0.05, 0.04), M, trimColor);
         // 窓上の飾り（まぐさ帯 / Beletage はペディメント）
         if (!top) {
           // CITY2 2026-11-10: 窓上の飾りを大きく。まぐさ帯 0.28→0.36・出 0.18→0.3、両端に持ち送り（ブラケット）。Beletage は三角ペディメント（様式 A/B）か太い段付きの庇（C/D）
           B.add('trim', translated(box(ww + 0.5, 0.36, 0.3), u, y0 + sill + wh + 0.2, 0.1), M, trimColor);
-          for (const sb of [-1, 1]) B.add('trim', translated(box(0.16, 0.3, 0.26), u + sb * (ww / 2 + 0.1), y0 + sill + wh - 0.1, 0.1), M, trimColor);
+          if (!LITE_MODE) for (const sb of [-1, 1]) B.add('trim', translated(box(0.16, 0.3, 0.26), u + sb * (ww / 2 + 0.1), y0 + sill + wh - 0.1, 0.1), M, trimColor);   // 持ち送りは PC だけ
           if (bel && (style.pediments || style.dentils)) {
             B.add('trim', pedimentGeo(ww + 0.7, 0.7, 0.3, u, y0 + sill + wh + 0.38), M, trimColor);
           } else if (bel) {
@@ -679,9 +687,9 @@ function buildFacade(B, style, floors, fw, M, ctx) {
           B.add('iron', translated(box(0.05, 1.0, 0.05), u - bw / 2 + 0.02, ry + 0.5, 1.08), M);
           B.add('iron', translated(box(0.05, 1.0, 0.05), u + bw / 2 - 0.02, ry + 0.5, 1.08), M);
           // 2026-10-14 見た目の質: 三角形が上限（低画質 90 万）に当たったので、手すりの縦棒を 0.13m → 0.2m 間隔、飾り棒 6→4 本に（画面では区別がつかない）
-          const nb = Math.floor(bw / 0.2);
+          const nb = Math.floor(bw / (LITE_MODE ? 0.32 : 0.2));   // 第 4 周: スマホは 0.32m 間隔
           for (let k = 1; k < nb; k++) B.add('iron', translated(box(0.025, 0.95, 0.025), u - bw / 2 + (bw / nb) * k, ry + 0.5, 1.08), M);
-          for (let k = 1; k < 5; k++) B.add('iron', translated(box(0.025, 0.95, 0.025), u + (k % 2 ? -1 : 1) * 0.5 * (1.1 - k * 0.05), ry + 0.5, 0.55 * 0.5 + 0.8), M);
+          if (!LITE_MODE) for (let k = 1; k < 5; k++) B.add('iron', translated(box(0.025, 0.95, 0.025), u + (k % 2 ? -1 : 1) * 0.5 * (1.1 - k * 0.05), ry + 0.5, 0.55 * 0.5 + 0.8), M);
         }
       }
     }
@@ -694,7 +702,7 @@ function buildFacade(B, style, floors, fw, M, ctx) {
   }
   // CITY2 第 3 周: リザリートの上に切妻のペディメントと台（屋根の中央の飾り）。階の帯もリザリートの面に重ねる
   if (riz) {
-    const rw = bay * 3 + 0.2, uc = -fw / 2 + endPier + bay * (centerBay + 0.5);
+    const rw = bay * (rizHalf * 2 + 1) + 0.2, uc = -fw / 2 + endPier + bay * (centerBay + 0.5);
     if (fw > 26) {
       B.add('trim', translated(box(rw + 0.6, 1.0, riz + 0.5), uc, y0 + 0.5, riz / 2 - 0.2), M, trimColor);
       B.add('trim', pedimentGeo(rw + 0.8, 2.2, riz + 0.5, uc, y0 + 1.0).translate(0, 0, riz), M, trimColor);
@@ -706,7 +714,7 @@ function buildFacade(B, style, floors, fw, M, ctx) {
     for (let f = 1; f < floors.length; f++) { if (f % style.bands === 0 || f === (style.floors.length >= 6 ? 2 : 1)) B.add('trim', translated(box(rw, 0.46, 0.34), uc, yb + 0.23, riz + 0.17), M, trimColor); yb += floors[f]; }
   }
   // CITY2 2026-11-10: 角の隅石（クオイン）。正面の両端に 0.82m おきで長短の石を交互に積む（上階だけ。1 階は石積み）。詳細版だけ
-  if (!lite && !hasArcade) {
+  if (!lite && !hasArcade && !LITE_MODE) {
     const yq0 = floors[0];
     for (const sgn of [-1, 1]) {
       let k = 0;
@@ -909,10 +917,9 @@ function buildStreetFurniture(world, materials, assets) {
   // 手続きの鋳鉄灯（台座・柱・襟・ガラスの灯室・笠・頂飾り ≒ 150 三角形）を 2 つのインスタンスメッシュ（鉄・ガラス）で描く
   if (world.lamps?.length) {
     const iron = mergeGeometries([
-      new THREE.CylinderGeometry(0.12, 0.2, 0.55, 8, 1, true).translate(0, 0.275, 0),
-      new THREE.CylinderGeometry(0.05, 0.075, 3.0, 7, 1, true).translate(0, 0.55 + 1.5, 0),
-      new THREE.CylinderGeometry(0.1, 0.1, 0.12, 7, 1, true).translate(0, 2.3, 0),
-      new THREE.CylinderGeometry(0.09, 0.06, 0.16, 7, 1, true).translate(0, 3.55, 0),
+      new THREE.CylinderGeometry(0.12, 0.2, 0.55, 6, 1, true).translate(0, 0.275, 0),
+      new THREE.CylinderGeometry(0.05, 0.075, 3.0, 5, 1, true).translate(0, 0.55 + 1.5, 0),
+      new THREE.CylinderGeometry(0.09, 0.06, 0.16, 5, 1, true).translate(0, 3.55, 0),
       new THREE.BoxGeometry(0.5, 0.05, 0.5).translate(0, 3.62, 0),
       ...[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([x, z]) => new THREE.BoxGeometry(0.03, 0.62, 0.03).translate(x * 0.22, 3.95, z * 0.22)),
       new THREE.ConeGeometry(0.42, 0.36, 4).translate(0, 4.44, 0),
@@ -920,7 +927,7 @@ function buildStreetFurniture(world, materials, assets) {
     ], false);
     const glassG = new THREE.BoxGeometry(0.46, 0.62, 0.46).translate(0, 3.95, 0);
     const mk = (geo, mat, cast) => { const inst = new THREE.InstancedMesh(geo, mat, world.lamps.length); world.lamps.forEach((l, i) => inst.setMatrixAt(i, obbMatrix(l))); inst.castShadow = cast; inst.receiveShadow = false; return inst; };
-    group.add(mk(iron, materials.iron, true), mk(glassG, materials.lampGlass, false));
+    group.add(mk(iron, materials.iron, !LITE_MODE), mk(glassG, materials.lampGlass, false));   // 第 4 周: スマホは街灯の影を切る
   }
   const kinds = { table: [], tableB: [], plant: [], plantB: [] }; // bench は手続き（buildStreetFurnitureTail。glb は 376 三角形 × 140 台で重かった）
   for (const f of world.furniture || []) if (kinds[f.kind]) kinds[f.kind].push(f);
@@ -953,7 +960,7 @@ function buildStreetFurniture(world, materials, assets) {
       treeCells.push({ cx, cz, local, lodObj, far, near: null });
       group.add(lodObj);
     }
-    const TREE_NEAR = 100, TREE_DROP = 40; // FEEL2 2026-10-14: 120→100（近景の木の区画を減らして heap を 260MB 以下に収める）
+    const TREE_NEAR = LITE_MODE ? 40 : 100, TREE_DROP = 40;   // CITY2 第 4 周: スマホは近景の木（葉 8 塊・細分 2）を 55m まで // FEEL2 2026-10-14: 120→100（近景の木の区画を減らして heap を 260MB 以下に収める）
     group.userData.streamTrees = (px, pz, maxBuild = 1) => {
       let built = 0;
       for (const c of treeCells) {
@@ -1022,7 +1029,7 @@ function buildStreetFurnitureTail(world, materials, group) {
     const inst = new THREE.InstancedMesh(g, materials.steel, world.bollards.length);
     const m = new THREE.Matrix4();
     world.bollards.forEach((b, i) => { m.makeTranslation(b.x, 0.5, b.z); inst.setMatrixAt(i, m); });
-    inst.castShadow = true;
+    inst.castShadow = !LITE_MODE;
     group.add(inst);
   }
   // 賑わい 2026-10-03: 静的な通りの小物（起動時に 1 回作る。インスタンス or 1 メッシュに結合なのでメモリは小さい）
@@ -1039,7 +1046,7 @@ function buildStreetFurnitureTail(world, materials, group) {
     const geo = mergeGeometries(parts, false);
     const inst = new THREE.InstancedMesh(geo, materials.matte, benches.length);
     benches.forEach((b, i) => inst.setMatrixAt(i, obbMatrix(b)));
-    inst.castShadow = true; group.add(inst);
+    inst.castShadow = !LITE_MODE; group.add(inst);
   }
   // 自転車ラック（逆 U 字 × 3。粗い円環で 1 台 ≒ 250 三角形）
   if (world.racks?.length) {
@@ -1051,16 +1058,16 @@ function buildStreetFurnitureTail(world, materials, group) {
     const geo = mergeGeometries(parts, false);
     const inst = new THREE.InstancedMesh(geo, materials.steel, world.racks.length);
     world.racks.forEach((r, i) => inst.setMatrixAt(i, obbMatrix(r)));
-    inst.castShadow = true; group.add(inst);
+    inst.castShadow = !LITE_MODE; group.add(inst);
   }
   // 標識（柱 + 板。種類: 歩行者ゾーン=青四角、進入禁止=赤丸に白、駐車=青四角に白 P）
   if (world.signs?.length) {
     const B = new Bucket();
     for (const s of world.signs) {
       const Mx = obbMatrix(s);
-      B.add('steel', translated(new THREE.CylinderGeometry(0.03, 0.035, 2.5, 6), 0, 1.25, 0), Mx.clone());
+      B.add('steel', translated(new THREE.CylinderGeometry(0.03, 0.035, 2.5, 5, 1, true), 0, 1.25, 0), Mx.clone());
       if (s.kind === 'noentry') {
-        B.add('matte', translated(new THREE.CylinderGeometry(0.3, 0.3, 0.02, 16).rotateZ(Math.PI / 2), 0.0, 2.3, 0), Mx.clone(), new THREE.Color(0xc8102e));
+        B.add('matte', translated(new THREE.CylinderGeometry(0.3, 0.3, 0.02, 8).rotateZ(Math.PI / 2), 0.0, 2.3, 0), Mx.clone(), new THREE.Color(0xc8102e));
         B.add('matte', translated(box(0.025, 0.1, 0.42), 0.0, 2.3, 0), Mx.clone(), new THREE.Color(0xf4f1ea));
       } else {
         B.add('matte', translated(box(0.02, 0.6, 0.6), 0, 2.25, 0), Mx.clone(), new THREE.Color(0x1f5bb5));
@@ -1068,7 +1075,7 @@ function buildStreetFurnitureTail(world, materials, group) {
         else { B.add('matte', translated(new THREE.CapsuleGeometry(0.05, 0.22, 3, 6), 0, 2.22, -0.08), Mx.clone(), new THREE.Color(0xf4f1ea)); B.add('matte', translated(new THREE.CapsuleGeometry(0.04, 0.16, 3, 6), 0, 2.18, 0.08), Mx.clone(), new THREE.Color(0xf4f1ea)); }
       }
     }
-    group.add(B.build(materials, { castShadow: true }));
+    group.add(B.build(materials, { castShadow: !LITE_MODE }));
   }
   // 広場の屋台（Würstelstand）: 箱 + カウンター + 赤白の日よけ + 看板 + 煙突。当たり判定は sim の円（r 1.7）
   if (world.kiosks?.length) {
@@ -1093,7 +1100,7 @@ function buildStreetFurnitureTail(world, materials, group) {
       // 客用の立ち飲みテーブル 2 つ
       for (const [x, z] of [[2.9, 1.1], [2.9, -1.1]]) { B.add('steel', translated(new THREE.CylinderGeometry(0.04, 0.04, 1.1, 6), x, 0.55, z), Mx.clone()); B.add('matte', translated(new THREE.CylinderGeometry(0.35, 0.35, 0.04, 12), x, 1.1, z), Mx.clone(), new THREE.Color(0xd8d2c4)); }
     }
-    group.add(B.build(materials, { castShadow: true }));
+    group.add(B.build(materials, { castShadow: !LITE_MODE }));
   }
   // 挙動担当 2026-10-14: リング通りの線路・白線・架線柱（worldFromSim の out.ring）。路面の物は影を落とさない 1 メッシュ、柱は別メッシュ
   if (world.ring) {
@@ -1165,7 +1172,7 @@ function buildStreetFurnitureTail(world, materials, group) {
       B.add('leaf', translated(new THREE.IcosahedronGeometry(0.42, 1), 0, 0.72, 0), Mx.clone(), new THREE.Color(PALETTE.leaf).offsetHSL(0, 0.1, -0.05));
       for (let i = 0; i < 5; i++) { const ang = r() * Math.PI * 2, rr = 0.1 + r() * 0.25; B.add('matte', translated(new THREE.OctahedronGeometry(0.09, 0), Math.cos(ang) * rr, 0.98 + r() * 0.1, Math.sin(ang) * rr), Mx.clone(), petals[Math.floor(r() * petals.length)]); }
     }
-    const m = B.build(materials, { castShadow: true }); m.name = 'ringFurniture'; group.add(m);
+    const m = B.build(materials, { castShadow: !LITE_MODE }); m.name = 'ringFurniture'; group.add(m);
   }
   // 挙動担当 2026-10-14: 駐車中の車（車体 + キャビン + 車輪 4。1 台 約 150 三角形、全部 1 メッシュに結合）
   if (world.parkedCars?.length) {
@@ -1177,9 +1184,9 @@ function buildStreetFurnitureTail(world, materials, group) {
       B.add('matte', translated(box(4.2, 0.55, 1.8), 0, 0.55, 0), Mx.clone(), paint);
       B.add('matte', translated(box(2.2, 0.5, 1.6), -0.1, 1.07, 0), Mx.clone(), paint);
       B.add('matte', translated(box(1.9, 0.42, 1.62), -0.1, 1.07, 0), Mx.clone(), glass);
-      for (const [x, z] of [[1.35, -0.85], [1.35, 0.85], [-1.35, -0.85], [-1.35, 0.85]]) B.add('matte', translated(new THREE.CylinderGeometry(0.32, 0.32, 0.22, 6).rotateX(Math.PI / 2), x, 0.32, z), Mx.clone(), tire);
+      for (const [x, z] of [[1.35, -0.85], [1.35, 0.85], [-1.35, -0.85], [-1.35, 0.85]]) B.add('matte', translated(new THREE.CylinderGeometry(0.32, 0.32, 0.22, LITE_MODE ? 4 : 6).rotateX(Math.PI / 2), x, 0.32, z), Mx.clone(), tire);
     }
-    const m = B.build(materials, { castShadow: true }); m.name = 'parkedCars'; group.add(m);
+    const m = B.build(materials, { castShadow: !LITE_MODE }); m.name = 'parkedCars'; group.add(m);
   }
   return group;
 }
@@ -1316,9 +1323,10 @@ export function buildCity(scene, world, assets, { quality = 'high' } = {}) {
   // → スマホの Claude アプリで開けなかった原因（PLAYTEST 第6回）。起動時は遠景だけ作る
   const CELL = 50, LOD_DIST = 90, LOD_FAR = 240;
   const LITE_Q = quality === 'low' || quality === 'mobile';
-  const FULL_R = LITE_Q ? 60 : 100;     // この距離に入った区画だけ詳細版を作る
+  LITE_MODE = LITE_Q;
+  const FULL_R = LITE_Q ? 40 : 100;     // この距離に入った区画だけ詳細版を作る（CITY2 第 4 周: スマホ 60 → 42）
   const LITE_R = LITE_Q ? 120 : 260;    // この距離に入った区画だけ軽量版を作る（CITY2: スマホ 170→130。その先は遠景の殻（シェーダの窓）で足りる。三角形を減らす）
-  const SHADOW_R = 40;                  // CITY2: スマホは、この距離より近い区画だけ影を落とす（影の範囲 26m + 区画の半径）
+  const SHADOW_R = 24;   // 第 4 周: 40 → 24（影の範囲 26m）                  // CITY2: スマホは、この距離より近い区画だけ影を落とす（影の範囲 26m + 区画の半径）
   const DROP = 40;                                 // 離れてからこれだけ余計に離れたら捨てる（行ったり来たりで作り直さない）
   const chunks = new Map();
   const list = world.buildings || [];
@@ -1489,7 +1497,7 @@ export function worldFromSim(sw) {
       for (const s of [-0.6, 0, 0.6]) {
         const qx = px + nx * 1.5 + tx * half * s, qz = pz + nz * 1.5 + tz * half * s;
         if (!insideAnyBuilding(qx, qz, b)) exposed = true;
-        if (nearestRoad(qx, qz) < 40 || nearPlaza(qx, qz)) nearRoad = true;   // CITY2 第 3 周: 26 → 40m（t=20 の広場に面した大きな壁がファサード無し＝シェーダの窓だけの壁板だった）
+        if (nearestRoad(qx, qz) < 60 || nearPlaza(qx, qz)) nearRoad = true;   // CITY2 第 3 周: 26 → 40m、第 4 周: 60m（t=20 の広場の壁は rear 棟の back 面で、道路から 40m 以上離れていた。tests/_city2_calls.html?diag=1）
       }
       if (exposed && nearRoad) faces.push(name);
     }

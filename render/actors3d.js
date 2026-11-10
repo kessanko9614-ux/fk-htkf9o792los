@@ -27,13 +27,18 @@ export const CARRIAGE = {
   withers: 1.65,
 };
 
-// 馬の歩様 → アニメ。Walk 1 周期 1.17s で約 1.6m 進む（≒1.4 m/s）, Gallop 0.58s で約 4.5m（≒7.8 m/s）
+// 馬の歩様 → アニメ。動くもの担当 2026-11-10: tests/_actor2_stride.html で測った「倍率 1 のとき蹄が地面を蹴る速さ」は
+// Walk 1.13 m/s（1 周期 1.167s で 1.32m）、Gallop 4.83 m/s（0.583s で 2.82m）。以前の 1.5 / 7.5 は実測より大きく、
+// 全力 17 m/s で蹄 10.9 m/s（36% 滑る）だった。倍率 = 速さ ÷ 実測。駆け足（gait 2、3〜6.5 m/s）も Walk を 4 倍速で回すより
+// Gallop の 0.7〜1.3 倍（ゆっくりの駈歩）の方が足が合う。Gallop の倍率は 3.0 で止める（30fps で 1 周期 6 フレームを切ると脚がちらつく。
+// 全力 17 m/s では蹄 14.5 m/s = 15% 滑る。これが残り）
+const HORSE_WALK_SPEED = 1.13, HORSE_GALLOP_SPEED = 4.83;
 const GAIT_ANIM = [
   { clip: 'Idle', rate: () => 1 },
-  { clip: 'Walk', rate: (v) => Math.max(0.6, v / 1.5) },
-  { clip: 'Walk', rate: (v) => Math.max(0.9, v / 1.6) },
-  { clip: 'Gallop', rate: (v) => Math.max(0.7, v / 7.5) },
-  { clip: 'Gallop', rate: (v) => Math.max(0.9, v / 7.5) },
+  { clip: 'Walk', rate: (v) => Math.max(0.6, v / HORSE_WALK_SPEED) },
+  { clip: 'Gallop', rate: (v) => Math.max(0.7, v / HORSE_GALLOP_SPEED) },
+  { clip: 'Gallop', rate: (v) => Math.min(3.0, Math.max(0.8, v / HORSE_GALLOP_SPEED)) },
+  { clip: 'Gallop', rate: (v) => Math.min(3.0, Math.max(0.9, v / HORSE_GALLOP_SPEED)) },
 ];
 
 const PED_PALETTE = [
@@ -699,7 +704,7 @@ function createNpcFiaker(look = 0) {
       const speed = Math.hypot(c.vx || 0, c.vz || 0);
       wheelAngle += speed * dt / C.rearR;
       for (const w of wheels) w.g.rotation.z = -wheelAngle * (C.rearR / w.R);
-      for (const h of horses) h.setGait(speed > 0.3 ? 2 : 0, speed, dt);
+      for (const h of horses) h.setGait(speed > 0.3 ? 1 : 0, speed, dt);   // NPC は 2.6〜3.4 m/s なので速歩（Walk の 2.3〜3 倍速）
     },
   };
 }
@@ -707,43 +712,69 @@ function createNpcFiaker(look = 0) {
 // ============================================================================
 // 車・タクシー・トラム（簡略形）
 // ============================================================================
+// 2026-11-10 動くもの担当: 車の塗装色（look = sim の id で選ぶ）。タクシーはクリーム固定
+const CAR_PAINT = [0x1b2230, 0x9a9a9c, 0x2f2f33, 0x7a1f1f, 0x1f4d3a, 0xf2f2ee, 0x3b4f7a, 0x5a4a3a, 0xc8c2b4, 0x12263f];
+const CAR_PAINT_CACHE = new Map();
+function carPaint(kind, look) {
+  const key = kind === 'taxi' ? 'taxi' : 'c' + (look % CAR_PAINT.length);
+  let m = CAR_PAINT_CACHE.get(key);
+  if (!m) { m = mats().carPaint[kind === 'taxi' ? 'taxi' : 'car'].clone(); if (kind !== 'taxi') m.color.set(CAR_PAINT[look % CAR_PAINT.length]); CAR_PAINT_CACHE.set(key, m); }
+  return m;
+}
 export function createCar(kind = 'car', look = 0) {
   const M = mats();
   if (kind === 'fiaker') return createNpcFiaker(look);
   const g = new THREE.Group(); g.name = kind;
+  const box = (w, h, d, mat, x, y, z, rz = 0, ry = 0, shadow = true) => { const m = mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z, shadow); m.rotation.z = rz; m.rotation.y = ry; g.add(m); return m; };
   if (kind === 'tram') {
-    const L = 34, W = 2.4, H = 3.5;
-    for (let i = 0; i < 5; i++) {
-      const x = -L / 2 + (L / 5) * (i + 0.5);
-      g.add(mesh(new THREE.BoxGeometry(L / 5 - 0.15, 1.3, W), M.carPaint.tram, x, 0.65 + 0.2, 0));
-      g.add(mesh(new THREE.BoxGeometry(L / 5 - 0.15, 1.1, W - 0.05), M.carGlass, x, 1.85 + 0.2, 0));
-      g.add(mesh(new THREE.BoxGeometry(L / 5 - 0.15, 0.6, W), M.tramWhite, x, 2.7 + 0.2, 0));
-      g.add(mesh(new THREE.BoxGeometry(L / 5 - 0.15, 0.3, W - 0.3), M.tramRoof, x, 3.15 + 0.2, 0));
-    }
-    g.add(mesh(new THREE.BoxGeometry(L, 0.3, W - 0.6), M.iron, 0, 0.2, 0));
-    collapseStatic(g);   // 21 → 5
+    // 2026-11-10: 箱 5 連 → 赤い腰板・白い上部・連続した窓（ガラス）・ドアの筋・前照灯・パンタグラフ。材質 6（赤・白・ガラス・屋根・鉄・ランプ）
+    const L = 34, W = 2.4;
+    box(L, 0.3, W - 0.6, M.iron, 0, 0.2, 0);                       // 台車枠
+    for (let i = 0; i < 8; i++) { const x = -L / 2 + 1.6 + i * 4.4; for (const sz of [1, -1]) { const wh = mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.18, 12), M.iron, x, 0.33, sz * 0.75); wh.rotation.x = Math.PI / 2; g.add(wh); } }
+    box(L, 0.95, W, M.carPaint.tram, 0, 0.85, 0);                   // 赤い腰板
+    box(L, 1.0, W - 0.08, M.carGlass, 0, 1.85, 0);                   // 窓帯（ガラス）
+    for (let i = 0; i < 5; i++) { const x = -L / 2 + (L / 5) * (i + 0.5); box(0.12, 1.0, W, M.tramWhite, x - L / 10 + 0.06, 1.85, 0); box(0.12, 1.0, W, M.tramWhite, x + L / 10 - 0.06, 1.85, 0); for (const sz of [1, -1]) box(1.2, 2.0, 0.03, M.tramWhite, x + 2.2, 1.35, sz * (W / 2 + 0.005)); }  // 柱とドア
+    box(L, 0.55, W, M.tramWhite, 0, 2.62, 0);                        // 上部の白
+    box(L - 0.4, 0.32, W - 0.3, M.tramRoof, 0, 3.05, 0);             // 屋根
+    for (const sx of [1, -1]) { box(0.06, 0.25, 0.4, M.lampGlass, sx * (L / 2 + 0.01), 0.75, 0.6, 0, 0, false); box(0.06, 0.25, 0.4, M.lampGlass, sx * (L / 2 + 0.01), 0.75, -0.6, 0, 0, false); }
+    box(0.08, 0.9, 0.08, M.iron, 4, 3.6, 0.5, 0.35); box(0.08, 0.9, 0.08, M.iron, 4, 3.6, -0.5, 0.35); box(0.06, 0.06, 1.4, M.iron, 3.7, 4.0, 0);  // パンタグラフ
+    collapseStatic(g);
     return { group: g, update(c) { g.position.set(c.x, 0, c.z); g.rotation.y = -c.yaw; } };
   }
-  const paint = M.carPaint[kind] || M.carPaint.car;
-  g.add(mesh(new THREE.BoxGeometry(4.5, 0.55, 1.8), paint, 0, 0.62, 0));
-  const hood = mesh(new THREE.BoxGeometry(1.3, 0.12, 1.7), paint, 1.4, 0.95, 0); g.add(hood);
-  const cabin = mesh(new THREE.BoxGeometry(2.3, 0.55, 1.65), M.carGlass, -0.2, 1.17, 0); g.add(cabin);
-  g.add(mesh(new THREE.BoxGeometry(2.1, 0.06, 1.5), paint, -0.2, 1.47, 0));
-  g.add(mesh(new THREE.BoxGeometry(0.9, 0.12, 1.7), paint, -1.7, 0.95, 0));
+  // 2026-11-10: 箱 → 下半身・肩・ボンネット（傾斜）・トランク・ピラー・屋根・ミラー・バンパー・グリル・リム・前照灯/尾灯。
+  // 材質 6（塗装・ガラス・タイヤ・鉄・ランプ・ハザード）。以前は 5（タクシーの表示は +2）
+  const paint = carPaint(kind, look);
+  box(4.5, 0.48, 1.8, paint, 0, 0.6, 0);                           // 下半身
+  box(4.2, 0.22, 1.74, paint, 0, 0.94, 0);                         // 肩
+  box(1.5, 0.16, 1.66, paint, 1.5, 1.05, 0, -0.1);                 // ボンネット（前が低い）
+  box(0.95, 0.14, 1.66, paint, -1.75, 1.08, 0, 0.08);              // トランク
+  box(2.1, 0.06, 1.56, paint, -0.2, 1.52, 0);                      // 屋根
+  for (const sz of [1, -1]) {
+    box(0.07, 0.55, 0.07, paint, 0.82, 1.27, sz * 0.78, -0.55);    // A ピラー
+    box(0.06, 0.5, 0.06, paint, -0.25, 1.26, sz * 0.8);            // B ピラー
+    box(0.07, 0.5, 0.07, paint, -1.2, 1.27, sz * 0.78, 0.5);       // C ピラー
+    box(0.08, 0.1, 0.22, paint, 0.7, 1.12, sz * 0.98);             // ミラー
+    box(1.3, 0.03, 0.04, paint, 0.1, 1.0, sz * 0.9);               // ドアの筋
+  }
+  box(2.1, 0.52, 1.6, M.carGlass, -0.2, 1.24, 0);                  // キャビンのガラス（ピラーの内側）
   for (const [x, z] of [[1.4, 0.85], [1.4, -0.85], [-1.4, 0.85], [-1.4, -0.85]]) {
     const w = mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.22, 16), M.tire, x, 0.33, z); w.rotation.x = Math.PI / 2; g.add(w);
+    const rim = mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.23, 12), M.iron, x, 0.33, z); rim.rotation.x = Math.PI / 2; g.add(rim);
   }
-  const hzMat = M.hazard.clone();   // 2026-11-10: 1 台 1 材質（4 灯を 1 Mesh に結合して点滅）
+  box(0.14, 0.14, 1.76, M.iron, 2.2, 0.42, 0); box(0.14, 0.14, 1.76, M.iron, -2.2, 0.42, 0);   // バンパー
+  box(0.05, 0.18, 0.9, M.iron, 2.26, 0.7, 0);                      // グリル
+  const hzMat = M.hazard.clone();   // 1 台 1 材質（4 灯を 1 Mesh に結合して点滅）
   for (const sz of [1, -1]) {
-    g.add(mesh(new THREE.BoxGeometry(0.05, 0.15, 0.35), M.lampGlass, 2.25, 0.7, sz * 0.6, false));
-    g.add(mesh(new THREE.BoxGeometry(0.05, 0.12, 0.2), hzMat, 2.25, 0.7, sz * 0.85, false));
-    g.add(mesh(new THREE.BoxGeometry(0.05, 0.12, 0.3), hzMat, -2.25, 0.7, sz * 0.7, false));
+    box(0.05, 0.16, 0.32, M.lampGlass, 2.26, 0.74, sz * 0.62, 0, 0, false);     // 前照灯
+    box(0.04, 0.12, 0.34, M.lampGlass, -2.26, 0.78, sz * 0.6, 0, 0, false);     // 尾灯（ランプと同じ材質で call を増やさない）
+    box(0.05, 0.1, 0.16, hzMat, 2.26, 0.74, sz * 0.86, 0, 0, false);
+    box(0.05, 0.1, 0.16, hzMat, -2.26, 0.78, sz * 0.84, 0, 0, false);
   }
   if (kind === 'taxi') {
-    g.add(mesh(new THREE.BoxGeometry(0.5, 0.12, 0.12), M.sign, -0.2, 1.56, 0));
-    g.add(mesh(new THREE.BoxGeometry(0.36, 0.06, 0.125), M.signText, -0.2, 1.56, 0, false));
+    box(0.5, 0.12, 0.12, M.sign, -0.2, 1.6, 0);
+    box(0.36, 0.06, 0.125, M.signText, -0.2, 1.6, 0, 0, 0, false);
   }
-  collapseStatic(g);   // 15〜17 Mesh → 材質の数（5〜7）
+  collapseStatic(g);
   let t = 0, lastX = null, lastZ = null, lastTick = 0, grow = 1;
   return {
     group: g,

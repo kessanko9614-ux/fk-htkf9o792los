@@ -50,7 +50,7 @@ export function createFX(scene) {
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _c = new THREE.Color();
 
   // ---- 時間・揺れ
-  const T = { hitStop: 0, slow: 0, slowScale: 1, shake: 0, shakeT: 0 };
+  const T = { hitStop: 0, slow: 0, slowScale: 1, shake: 0, shakeT: 0, kick: 0, dirX: 0, dirZ: 0 };   // kick: 衝突の FOV の一瞬の広がり（0..1）。dir: 衝突の向き（揺れをその向きに寄せる）
 
   function puffDust(x, z, { n = 14, y = 0.1, spread = 0.8, up = 1.2, size = 1.0, color = null } = {}) {
     if (color) dustMat.uniforms.uColor.value.set(color);
@@ -93,7 +93,9 @@ export function createFX(scene) {
         const big = v > 6;
         hitStop(big ? 0.1 : 0.05); shake(Math.min(2, v / 5));
         if (big) slowMo(0.45, 0.35);
-        burstDebris(ev.x, 0.5, ev.z, { n: Math.round(4 + v * 1.2), color: KIND_COLOR[ev.with] ?? 0x8a5a3c, power: 2 + v * 0.6 });
+        // 2026-11-10 動くもの担当: 一瞬 FOV が広がる「ガツン」（最大 +5°、0.3 秒で戻る）。破片は少し多く・速さで散り方が変わる
+        T.kick = Math.min(1, v / 9); T.dirX = ev.dirX || 0; T.dirZ = ev.dirZ || 0;
+        burstDebris(ev.x, 0.5, ev.z, { n: Math.round(6 + v * 1.5), color: KIND_COLOR[ev.with] ?? 0x8a5a3c, power: 2.5 + v * 0.7, size: big ? 0.15 : 0.11 });
         puffDust(ev.x, ev.z, { n: 20 + v * 2, spread: 1.2, up: 1.5, size: 1.4 });
         break;
       }
@@ -112,7 +114,7 @@ export function createFX(scene) {
     if (speed > 4 && hoofAcc > 1.6) { hoofAcc = 0; puffDust(x, z, { n: 2 + (speed > 9 ? 2 : 0), spread: 0.7, up: 0.35, size: 0.4 }); }
   }
 
-  const shakeOut = { x: 0, y: 0, z: 0, roll: 0 };
+  const shakeOut = { x: 0, y: 0, z: 0, roll: 0, fov: 0 };
   function update(dtReal) {
     // 時間倍率
     let timeScale = 1;
@@ -127,6 +129,9 @@ export function createFX(scene) {
       shakeOut.roll = Math.sin(T.shakeT * 37) * a * 0.12;
       T.shake = Math.max(0, T.shake - dtReal * 3.2);
     } else { shakeOut.x = shakeOut.y = shakeOut.z = shakeOut.roll = 0; }
+    // FOV の一瞬の広がり: 立ち上がりは即、戻りは 0.3 秒の指数
+    shakeOut.fov = T.kick * 5;
+    T.kick = Math.max(0, T.kick - dtReal / 0.3 * Math.max(0.35, T.kick));
     // ほこり
     for (let i = 0; i < MAX_DUST; i++) {
       const p = dustP[i];

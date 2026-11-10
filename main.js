@@ -56,7 +56,7 @@ function buildActors() {
   carriage = createCarriage(actorAssets); R.scene.add(carriage.group);
   // 動くもの担当 2026-11-10: sim の look は 0..9。服の色 18 種を使い切るため id で散らす（見た目だけ。sim は触らない）
   for (const pd of g.peds) { const p = createPedestrian(actorAssets, (pd.look + (pd.id * 7) % 18) % 18); R.scene.add(p.group); peds.push(p); pedById.set(pd.id, p); }
-  for (const cr of [...g.cars, ...(g.trams || [])]) { const c = createCar(cr.kind); R.scene.add(c.group); cars.push({ o: c, s: cr }); }
+  for (const cr of [...g.cars, ...(g.trams || [])]) { const c = createCar(cr.kind, cr.id || 0) /* 2026-11-10: id で塗装色を散らす（見た目だけ） */; R.scene.add(c.group); cars.push({ o: c, s: cr }); }
   props = createProps(R.scene, g.props, cityAssets);
 }
 
