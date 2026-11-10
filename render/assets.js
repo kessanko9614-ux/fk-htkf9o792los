@@ -133,7 +133,9 @@ function canvasTexture(canvas, { srgb = false, anisotropy = 8 } = {}) {
 function rand(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 /** 花崗岩の板石（歩道・広場）。1 枚 = metersPerTile m 四方。map + normalMap + roughnessMap を返す */
-export function makeGraniteSlabs({ size = 1024, metersPerTile = 2.0, slabW = 0.4, slabLens = [0.6, 0.8, 1.0, 1.2], colors = ['#a3a1a3', '#989698', '#8d8b8a', '#aaa8a6', '#919092'], seed = 7 } = {}) {
+// CITY2 2026-11-10: 板石を細かく（幅 0.4→0.28m、長さ 0.6〜1.2→0.35〜0.8m）、色のばらつきを増やす（暖色・寒色・暗い石を混ぜ、石ごとの明暗 ±10→±22）。
+// 「タイルが大きく規則的すぎる」（主ループ 13:36）
+export function makeGraniteSlabs({ size = 1024, metersPerTile = 2.0, slabW = 0.28, slabLens = [0.35, 0.45, 0.55, 0.65, 0.8], colors = ['#a3a1a3', '#8f8d8b', '#8a8683', '#aaa8a6', '#9a9593', '#7f7d7b', '#a59e95', '#8d9094', '#b0aca6', '#767472'], seed = 7 } = {}) {
   const c = document.createElement('canvas'); c.width = c.height = size;
   const g = c.getContext('2d');
   const hc = document.createElement('canvas'); hc.width = hc.height = size;
@@ -150,7 +152,7 @@ export function makeGraniteSlabs({ size = 1024, metersPerTile = 2.0, slabW = 0.4
     while (u < metersPerTile + 0.01) {
       const len = slabLens[Math.floor(r() * slabLens.length)];
       const col = colors[Math.floor(r() * colors.length)];
-      const jitter = (r() - 0.5) * 10;
+      const jitter = (r() - 0.5) * 22;
       const joint = 0.012;
       const x0 = (u + joint) * px, y0 = (v + joint) * px, w = (len - 2 * joint) * px, h = (slabW - 2 * joint) * px;
       for (const [ctx, fill] of [[g, shade(col, jitter)], [hg, '#e8e8e8']]) {

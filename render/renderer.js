@@ -36,25 +36,41 @@ const ORDER = ['high', 'mid', 'mobile', 'low'];
 export const LIGHT = {
   // 2026-10-14 見た目の質（LOOK_REPORT）: 写真 dc318c81 / 65fe9db7（晴れた午後）に寄せる。
   // 太陽を強く・暖かく、環境光（曇りの HDRI）を弱めて日向と日陰の差を出す。影の中は半球光の空色で青みに。
-  sunColor: 0xffe6c4,
-  sunIntensity: 4.4,
+  // CITY2 2026-11-10（主ループ「灰色で平ら・コントラストが低い」）: 太陽を強く・より暖かく、日陰の空色を濃く、露出を少し下げて白飛びを防ぐ。仕上げの色調補正は GRADE
+  sunColor: 0xffd9a8,
+  sunIntensity: 5.4,
   // 地面→太陽の向き。高度 54°・方位は右前 35°。
   // 高度を 41° にすると 24m の建物の影が 27m 伸びて幅 21m の通りを丸ごと覆い、「影が無い＝平たい」に見えた（周 2 の失敗）。
   // 62° だと壁面（鉛直）に当たる光が cos 62°=0.47 で弱く、どの向きの壁も同じ明るさ＝平板だった（LOOK_REPORT 周 1）。
   // 54° なら壁の日向は 0.59、24m の建物の影は 17m（幅 21m の通りの 8 割、10m の通りは全部影だが縁は画面に入る）。
   sunDir: new THREE.Vector3(0.482, 0.809, -0.337).normalize(),
-  envIntensity: 0.38,
-  hemiSky: 0xa6c3e8,
-  hemiGround: 0x6f6658,
-  hemiIntensity: 0.5,
-  exposure: 1.0,
+  envIntensity: 0.30,
+  // CITY2 第 3 周（主ループ「日陰が青黒くつぶれる」）: 半球光 0.72 → 1.0・空色を明るく、暗部の青を半分に、コントラスト 1.12 → 1.06
+  hemiSky: 0xa9c4ec,
+  hemiGround: 0x6a6356,
+  hemiIntensity: 1.0,
+  exposure: 0.92,
   // 空気遠近: フォグは灰色でなく空の地平の色（青白）。密度は少し下げて遠景の建物の形を残す
-  fogColor: 0xbccbe0,
-  fogDensity: 0.00095,
+  fogColor: 0xc3cfe0,
+  fogDensity: 0.0012,
   // HDRI の太陽（quattro_canti: u=0.595, 高度 10°）の方位を sunDir の方位に合わせる回転（three の equirect: u = atan2(z,x)/2π + 0.5）
   envRotation: 1.21,
-  skyZenith: 0x3570c2,
-  skyHorizon: 0xd6e2ee,
+  skyZenith: 0x2a63bd,
+  skyHorizon: 0xd3dfeb,
+};
+// CITY2 2026-11-10: 仕上げの色調補正（OutputPass の後、sRGB で）。コントラスト・彩度・暗部を青く明部を暖かく・軽いビネット
+export const GRADE = { contrast: 1.06, saturation: 1.2, vignette: 0.18, shadowTint: new THREE.Vector3(-0.01, -0.004, 0.018), highlightTint: new THREE.Vector3(0.03, 0.012, -0.025) };
+const GradeShader = {
+  uniforms: { tDiffuse: { value: null }, uContrast: { value: GRADE.contrast }, uSat: { value: GRADE.saturation }, uVig: { value: GRADE.vignette }, uShadow: { value: GRADE.shadowTint }, uHigh: { value: GRADE.highlightTint } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uContrast, uSat, uVig; uniform vec3 uShadow, uHigh; varying vec2 vUv;
+    void main(){ vec4 c = texture2D(tDiffuse, vUv); vec3 col = c.rgb;
+      float l = dot(col, vec3(0.299, 0.587, 0.114));
+      col = mix(vec3(l), col, uSat);
+      col = (col - 0.5) * uContrast + 0.5;
+      col += uShadow * (1.0 - smoothstep(0.0, 0.55, l)) + uHigh * smoothstep(0.45, 1.0, l);
+      vec2 d = vUv - 0.5; col *= 1.0 - uVig * dot(d, d) * 2.0;
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a); }`,
 };
 
 export function createRenderer({ canvas, quality = 'high', autoQuality = true, width, height, preserveDrawingBuffer = false } = {}) {
@@ -117,6 +133,7 @@ export function createRenderer({ canvas, quality = 'high', autoQuality = true, w
       passes.bloom = bloom; composer.addPass(bloom);
     }
     passes.output = new OutputPass(); composer.addPass(passes.output);
+    passes.grade = new ShaderPass(GradeShader); composer.addPass(passes.grade);   // CITY2: 色調補正（全段。AA の前）
     if (Q.smaa) { passes.smaa = new SMAAPass(size.w, size.h); composer.addPass(passes.smaa); }
     if (Q.fxaa) { passes.fxaa = new ShaderPass(FXAAShader); composer.addPass(passes.fxaa); }
   }

@@ -54,7 +54,8 @@ function buildActors() {
   if (carriage) R.scene.remove(carriage.group);
   if (props) R.scene.remove(props.group);
   carriage = createCarriage(actorAssets); R.scene.add(carriage.group);
-  for (const pd of g.peds) { const p = createPedestrian(actorAssets, pd.look); R.scene.add(p.group); peds.push(p); pedById.set(pd.id, p); }
+  // 動くもの担当 2026-11-10: sim の look は 0..9。服の色 18 種を使い切るため id で散らす（見た目だけ。sim は触らない）
+  for (const pd of g.peds) { const p = createPedestrian(actorAssets, (pd.look + (pd.id * 7) % 18) % 18); R.scene.add(p.group); peds.push(p); pedById.set(pd.id, p); }
   for (const cr of [...g.cars, ...(g.trams || [])]) { const c = createCar(cr.kind); R.scene.add(c.group); cars.push({ o: c, s: cr }); }
   props = createProps(R.scene, g.props, cityAssets);
 }
@@ -62,6 +63,8 @@ function buildActors() {
 function restart(seed) {
   g = createGame(seed);
   window.__game = () => g;   // tests/looptest.html が読む
+  // 動くもの担当 2026-11-10: tests/_actor2_smooth.html が描画側の位置（補間後）を読む（計測専用）
+  window.__view = () => ({ carriage, peds, cars, props, camera: R.camera, follow, interp: INTERP, acc, timeScale: fx.timeScale });
   if (BOT) import('./sim/bot.js').then((m) => { bot = (gg) => m.botInput(gg, BOT); });
   if (!city) city = buildCity(R.scene, worldFromSim(g.world), cityAssets, { quality: R.getQuality() });
   buildActors();
@@ -136,21 +139,33 @@ const DT = TUNE.FIXED_DT;
 // 直し方: 各ステップの前に「前の位置」を控え、描く時は前と今の位置をアキュムレータの余り（acc/DT）で補間する。
 // 位置が 6m 以上飛んだ（出し直し・リトライ）ときは補間しない。アニメの dt も固定ステップの合計ではなく実時間（timeScale 込み）を使う。
 const SNAP_D2 = 6 * 6;
-const prevPl = { hx: 0, hz: 0, hyaw: 0, cx: 0, cz: 0, cyaw: 0, air: 0 };
+const INTERP = params.get('interp') !== '0';   // 動くもの担当 2026-11-10: ?interp=0 で補間を切る（計測の対照用）
+const prevPl = { hx: 0, hz: 0, hyaw: 0, cx: 0, cz: 0, cyaw: 0, air: 0, spin: 0, phase: 0 };
 const viewPl = { horse: {}, carriage: {} };
 let prevPeds = [], viewPeds = [];
+// 動くもの担当 2026-11-10: 小物（吹っ飛ぶ椅子など）と鳩も補間する。sim のオブジェクトは書き換えず、別の Map に前の位置を控える
+const prevProps = new Map(), prevBirds = new Map();
+const viewProp = { x: 0, y: 0, z: 0, yaw: 0 }, viewBird = { x: 0, y: 0, z: 0 };
 let interpValid = false;
-function resetInterp() { interpValid = false; }
+function resetInterp() { interpValid = false; prevProps.clear(); prevBirds.clear(); }
 function snapshotPrev() {
   const h = g.player.horse, c = g.player.carriage;
   prevPl.hx = h.x; prevPl.hz = h.z; prevPl.hyaw = h.yaw; prevPl.cx = c.x; prevPl.cz = c.z; prevPl.cyaw = c.yaw; prevPl.air = c.airborne || 0;
+  prevPl.spin = c.wheelSpin || 0; prevPl.phase = h.phase || 0;
   const n = g.peds.length;
   if (prevPeds.length !== n) { prevPeds = Array.from({ length: n }, () => ({})); viewPeds = Array.from({ length: n }, () => ({})); }
   for (let i = 0; i < n; i++) { const pd = g.peds[i], q = prevPeds[i]; q.x = pd.x; q.z = pd.z; q.yaw = pd.yaw; q.y = pd.y || 0; q.tick = pd._spawnTick || 0; }
   for (const c of cars) { const s = c.s; (c.prev || (c.prev = {})).x = s.x; c.prev.z = s.z; c.prev.yaw = s.yaw; c.prev.tick = s._spawnTick || 0; }
+  for (const p of g.props) {
+    if (p.resting && !(p.y > 0)) { if (prevProps.has(p)) prevProps.delete(p); continue; }   // 止まっている小物は控えない（動く物だけ）
+    let q = prevProps.get(p); if (!q) { q = {}; prevProps.set(p, q); }
+    q.x = p.x; q.z = p.z; q.y = p.y || 0; q.yaw = p.yaw || 0;
+  }
+  for (const b of g.pigeons || []) { let q = prevBirds.get(b); if (!q) { q = {}; prevBirds.set(b, q); } q.x = b.x; q.z = b.z; q.y = b.y || 0; }
   interpValid = true;
 }
 function lerpYaw(a, b, t) { let d = b - a; d = Math.atan2(Math.sin(d), Math.cos(d)); return a + d * t; }
+function lerpWrap(a, b, t, period) { let d = b - a; d -= Math.round(d / period) * period; return a + d * t; }
 function mix(prev, cur, a, out) {
   // prev/cur: {x,z,yaw,(y)} → out に書く。飛んだら cur
   const dx = cur.x - prev.x, dz = cur.z - prev.z;
@@ -159,6 +174,21 @@ function mix(prev, cur, a, out) {
   if ('y' in prev) out.y = prev.y + ((cur.y || 0) - prev.y) * a;
   return out;
 }
+// 小物・鳩の「描画用の位置」（補間）。prev が無い（止まっている・出たばかり）物は sim の位置そのまま
+let curAlpha = 1;
+function propView(p) {
+  const q = prevProps.get(p); if (!q) return null;
+  const dx = p.x - q.x, dz = p.z - q.z; if (dx * dx + dz * dz > SNAP_D2) return null;
+  viewProp.x = q.x + dx * curAlpha; viewProp.z = q.z + dz * curAlpha; viewProp.y = q.y + ((p.y || 0) - q.y) * curAlpha; viewProp.yaw = lerpYaw(q.yaw, p.yaw || 0, curAlpha);
+  return viewProp;
+}
+function birdView(b) {
+  const q = prevBirds.get(b); if (!q) return null;
+  const dx = b.x - q.x, dz = b.z - q.z; if (dx * dx + dz * dz > SNAP_D2) return null;
+  viewBird.x = q.x + dx * curAlpha; viewBird.z = q.z + dz * curAlpha; viewBird.y = q.y + ((b.y || 0) - q.y) * curAlpha;
+  return viewBird;
+}
+function onHoof(x, z, speed) { fx.puffDust(x, z, { n: speed > 9 ? 2 : 1, spread: 0.25, up: 0.25 + speed * 0.015, size: 0.26 }); }   // 控えめ（近景で白い塊にならない）
 function frame(dtReal, forcedInput) {
   const { timeScale, shake } = fx.update(dtReal);
   const inp = forcedInput || (bot ? bot(g) : input.read(dtReal));
@@ -174,7 +204,8 @@ function frame(dtReal, forcedInput) {
   const p = g.player;
   const animDt = g.over ? 0 : Math.min(dtReal, 0.1) * timeScale;
   // 補間した「描画用の位置」
-  const alpha = interpValid && !g.over ? Math.max(0, Math.min(1, acc / DT)) : 1;
+  const alpha = INTERP && interpValid && !g.over ? Math.max(0, Math.min(1, acc / DT)) : 1;
+  curAlpha = alpha;
   let pv = p;
   if (alpha < 1) {
     const h = p.horse, c = p.carriage;
@@ -184,30 +215,35 @@ function frame(dtReal, forcedInput) {
       viewPl.horse.x = prevPl.hx + (h.x - prevPl.hx) * alpha; viewPl.horse.z = prevPl.hz + (h.z - prevPl.hz) * alpha; viewPl.horse.yaw = lerpYaw(prevPl.hyaw, h.yaw, alpha);
       viewPl.carriage.x = prevPl.cx + dcx * alpha; viewPl.carriage.z = prevPl.cz + dcz * alpha; viewPl.carriage.yaw = lerpYaw(prevPl.cyaw, c.yaw, alpha);
       viewPl.carriage.airborne = prevPl.air + ((c.airborne || 0) - prevPl.air) * alpha;
+      // 2026-11-10 動くもの担当: 車輪の角と歩様の位相も補間する（車輪は 1/120 秒の段で回っていて、30fps で角速度が ±57% 揺れていた。tests/_actor2_smooth.html）
+      if (c.wheelSpin != null) viewPl.carriage.wheelSpin = lerpWrap(prevPl.spin, c.wheelSpin, alpha, Math.PI * 2);
+      viewPl.horse.phase = lerpWrap(prevPl.phase, h.phase || 0, alpha, 1);
       viewPl.speed = p.speed; viewPl.lateralG = p.lateralG; viewPl.longG = p.longG;
       pv = viewPl;
     }
   }
-  carriage.update(pv, animDt, { blobShadow: R.getQuality() === 'low' });
+  const lowQ = R.getQuality() === 'low';
+  const pedFar = R.getQuality() === 'high' ? 120 : 90;   // 2026-11-10 スマホの重さ: high 以外は 90m より遠い人を描かない（sim の人数は変えない）
+  // 蹄が地面に着いた瞬間に、その蹄の位置で土ぼこり（以前は馬の中心で 1.6m ごと）
+  carriage.update(pv, animDt, { blobShadow: lowQ, hatLost: !!g.ride.hatLost, onHoof: simDt > 0 ? onHoof : null });
   const cp = R.camera.position;
   g.peds.forEach((pd, i) => {
     const o = peds[i]; if (!o) return;
     let v = pd;
     if (alpha < 1 && prevPeds[i]) { v = viewPeds[i]; Object.assign(v, pd); mix(prevPeds[i], pd, alpha, v); }
-    o.update(v, animDt, Math.hypot(pd.x - cp.x, pd.z - cp.z));
+    o.update(v, animDt, Math.hypot(pd.x - cp.x, pd.z - cp.z), { blobShadow: lowQ, farCut: pedFar });
   });
   for (const c of cars) {
     let v = c.s;
     if (alpha < 1 && c.prev) { v = c.view || (c.view = {}); Object.assign(v, c.s); mix(c.prev, c.s, alpha, v); }
     c.o.update(v, animDt);
   }
-  props.update(g.props, g.pigeons, simDt);
-  fx.hoofDust(p.horse.x, p.horse.z, p.speed, simDt);
+  props.update(g.props, g.pigeons, simDt, alpha < 1 ? propView : null, alpha < 1 ? birdView : null);
   guide.update(dtReal, pv.carriage);
   if (g.ride.route !== lastRoute) { guide.setRoute(g.ride.route); lastRoute = g.ride.route; }
   if (g.ride.to !== lastTo) { guide.setDestination(g.ride.to); lastTo = g.ride.to; }
   follow.update(dtReal, pv, { shake });
-  R.setFocus(p.carriage.x, p.carriage.z);
+  R.setFocus(pv.carriage.x, pv.carriage.z);   // 影の枠も補間した位置に追従（影の縁がコマ落ちしない）
   city.update(p.carriage.x, p.carriage.z, 1); // 主ループ 2026-10-03: 近くの区画だけ詳細を作り、遠くは捨てる
   audio.update(simDt, p);
   // HUD

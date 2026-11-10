@@ -117,7 +117,8 @@ export function createProps(scene, props, assets) {
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1), _m2 = new THREE.Matrix4();
   let time = 0;
 
-  function update(propsNow, pigeons, dt) {
+  // 動くもの担当 2026-11-10: propView(p) / birdView(b) は main.js の補間（前のステップと今のステップの間の位置）。null なら sim の位置そのまま
+  function update(propsNow, pigeons, dt, propView = null, birdView = null) {
     time += dt;
     for (const { list, inst, offset } of meshes) {
       for (let i = 0; i < list.length; i++) {
@@ -126,8 +127,9 @@ export function createProps(scene, props, assets) {
         if (p._rx == null) { p._rx = 0; p._rz = 0; }
         if (!p.resting || p.y > 0) { p._rx += (p.spinX || 0) * dt; p._rz += (p.spinZ || 0) * dt; }
         else if (p.broken) { p._rx = THREE.MathUtils.lerp(p._rx, Math.PI / 2 * Math.sign(p._rx || 1), 0.3); } // 壊れて倒れた
-        _e.set(p._rx, -(p.yaw || 0), p._rz);
-        _q.setFromEuler(_e); _p.set(p.x, p.y || 0, p.z);
+        const v = (propView && propView(p)) || p;
+        _e.set(p._rx, -(v.yaw || 0), p._rz);
+        _q.setFromEuler(_e); _p.set(v.x, v.y || 0, v.z);
         _m.compose(_p, _q, _s).multiply(offset);
         inst.setMatrixAt(i, _m);
       }
@@ -136,7 +138,9 @@ export function createProps(scene, props, assets) {
     // 鳩
     const n = Math.min(64, pigeons?.length || 0);
     for (let i = 0; i < n; i++) {
-      const b = pigeons[i];
+      const b0 = pigeons[i];
+      const bv = (birdView && birdView(b0)) || b0;
+      const b = { id: b0.id, state: b0.state, x: bv.x, y: bv.y, z: bv.z };
       const flying = b.state === 'fly';
       const yaw = (b.id * 1.7) % (Math.PI * 2);
       const peck = flying ? 0 : Math.max(0, Math.sin(time * 6 + b.id)) * 0.25;   // 地面でついばむ（首を下げる）

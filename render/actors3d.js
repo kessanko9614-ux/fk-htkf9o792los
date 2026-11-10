@@ -47,7 +47,22 @@ const PED_PALETTE = [
   { Dress: 0xe9d4c6, Hair: 0x5a3a22 },
   { Dress: 0x3a2a52, Hair: 0x111111 },
   { Dress: 0xd9b24a, Hair: 0xb59a6a },
+  // 動くもの担当 2026-11-10: 服の色の幅（濃紺のコート・からし色・ワインレッド・オリーブ・水色・白シャツに黒・若草のワンピ・珊瑚色）
+  { Shirt: 0x1f2a44, Pants: 0x4a4a4f, Hair: 0x8a8a8a },
+  { Shirt: 0xc89a2e, Pants: 0x2d3a52, Hair: 0x2b1d14 },
+  { Shirt: 0x6b1f2e, Pants: 0x1f1f22, Hair: 0x5a3a22 },
+  { Shirt: 0x5c6b3a, Pants: 0xb8ad98, Hair: 0x111111 },
+  { Shirt: 0x8fb5d6, Pants: 0x3a3a40, Hair: 0xb59a6a },
+  { Shirt: 0xf2efe6, Pants: 0x15151a, Hair: 0x2b1d14 },
+  { Dress: 0x9fbf6a, Hair: 0x3a2a22 },
+  { Dress: 0xe07a5f, Hair: 0x111111 },
 ];
+let BLOB_GEO = null, BLOB_MAT = null;
+function blobShadowMesh() {
+  BLOB_GEO = BLOB_GEO || new THREE.CircleGeometry(0.5, 12);
+  BLOB_MAT = BLOB_MAT || new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false });
+  const m = new THREE.Mesh(BLOB_GEO, BLOB_MAT); m.rotation.x = -Math.PI / 2; m.position.y = 0.015; m.scale.set(0.5, 0.35, 1); m.renderOrder = 1; return m;
+}
 
 function findClip(anims, name) {
   return anims.find((a) => a.name === name) || anims.find((a) => a.name.endsWith('|' + name) || a.name.endsWith('_' + name)) || null;
@@ -126,6 +141,57 @@ function mesh(geo, mat, x = 0, y = 0, z = 0, shadow = true) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = shadow; m.receiveShadow = shadow; return m;
 }
 
+// ---- 描画命令を減らす道具（動くもの担当 2026-11-10、スマホの重さ対策）----
+// collapseStatic(group): group の中の「動かない Mesh」を材質ごとに 1 つに結合する（userData.keep の付いた物とその子孫、スキン、骨は残す）
+const _cm = new THREE.Matrix4();
+function collapseStatic(group) {
+  group.updateMatrixWorld(true);
+  const inv = group.matrixWorld.clone().invert();
+  const buckets = new Map(); const remove = [];
+  group.traverse((o) => {
+    if (o === group || !o.isMesh || o.isSkinnedMesh || o.isInstancedMesh || !o.geometry) return;
+    for (let p = o; p && p !== group; p = p.parent) if (p.userData.keep) return;
+    const g = o.geometry.clone(); g.applyMatrix4(_cm.multiplyMatrices(inv, o.matrixWorld));
+    for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+    const key = o.material.uuid; let b = buckets.get(key); if (!b) { b = { mat: o.material, geos: [] }; buckets.set(key, b); } b.geos.push(g); remove.push(o);
+  });
+  for (const o of remove) o.parent.remove(o);
+  for (const b of buckets.values()) { const m = new THREE.Mesh(mergeGeometries(b.geos, false), b.mat); m.castShadow = true; m.receiveShadow = true; group.add(m); }
+  return group;
+}
+// mergeSkinned(pivot, colorOf, material): スキンメッシュの部位（シャツ・肌・ズボン…＝材質ごとに別 Mesh で 5〜7 call）を
+// 頂点色 1 本の SkinnedMesh にまとめる（1 call）。ジオメトリは呼び元がキャッシュして共有、骨（skeleton）は個体ごと
+function mergeSkinned(pivot, geoCache, cacheKey, colorOf, material) {
+  const skinned = []; pivot.traverse((o) => { if (o.isSkinnedMesh) skinned.push(o); });
+  if (!skinned.length) return null;
+  let merged = geoCache.get(cacheKey);
+  if (!merged) {
+    const geos = [];
+    for (const m of skinned) {
+      const g = m.geometry.clone();
+      for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'skinIndex', 'skinWeight'].includes(k)) g.deleteAttribute(k);
+      g.morphAttributes = {};
+      const n = g.attributes.position.count, col = new Float32Array(n * 3), c = new THREE.Color(colorOf(m.material.name, m.material));
+      for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      geos.push(g);
+    }
+    merged = mergeGeometries(geos, false); geoCache.set(cacheKey, merged);
+  }
+  const first = skinned[0];
+  const out = new THREE.SkinnedMesh(merged, material);
+  out.position.copy(first.position); out.quaternion.copy(first.quaternion); out.scale.copy(first.scale);
+  out.bind(first.skeleton, first.bindMatrix);
+  out.castShadow = true; out.receiveShadow = false; out.frustumCulled = false;
+  first.parent.add(out);
+  for (const m of skinned) m.parent.remove(m);
+  return out;
+}
+const SKIN_GEO_CACHE = new Map();
+const PED_SKIN_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, envMapIntensity: 0.7 });
+const HORSE_SKIN_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, envMapIntensity: 0.7 });
+
 // ---- 車輪（トーラスのリム + 14 本スポーク + ハブ + 細いタイヤ）。軸は z ----
 function makeWheel(R, nSpokes = 14) {
   const M = mats();
@@ -158,9 +224,11 @@ function makeFender(R, width) {
 // ============================================================================
 // 馬 1 頭（アニメ付き）
 // ============================================================================
-function createHorse(assets, color) {
+function createHorse(assets, color, { lite = false } = {}) {
   const src = assets.horses[color] || assets.horses.white;
   const pivot = SkeletonUtils.clone(src.pivot);
+  // 部位（Main / Main_Dark / Hair / Hooves …7 call）を頂点色の 1 メッシュに（tintHorse で付けた色を焼く）
+  mergeSkinned(pivot, SKIN_GEO_CACHE, 'horse:' + color, (name, mat) => mat.color, HORSE_SKIN_MAT);
   pivot.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
   const mixer = new THREE.AnimationMixer(pivot);
   const actions = {};
@@ -168,14 +236,53 @@ function createHorse(assets, color) {
     const clip = findClip(src.animations, name);
     if (clip) { actions[name] = mixer.clipAction(clip); actions[name].enabled = true; actions[name].setEffectiveWeight(name === 'Idle' ? 1 : 0); actions[name].play(); }
   }
-  // 馬具: 腹帯と首輪（黒革）
+  // 馬具（動くもの担当 2026-11-10）: 以前は首輪 r0.34 を胸の前 (0.78, 1.2)、腹帯 r0.46 を (0.05, 1.05) に置いていて、
+  // 体から外れた大きな輪が 2 つ浮いて見えた（shots/actor2_before_carriage.png）。tests/_actor2_probe.html で測った
+  // 正規化後の断面（腹 x=-0.1: y 0.91..1.55 z ±0.25 / 首の付け根 x=0.6: y 1.27..1.81 z ±0.12 / 鼻面 x=1.2: y 1.53..1.75 z ±0.08）
+  // に合わせ、骨（Torso2 / Neck1 / Head）に付けて脚や首の動きに追従させる
   const M = mats();
-  const girth = mesh(new THREE.TorusGeometry(0.46, 0.025, 6, 24), M.blackLeather, 0.05, 1.05, 0); girth.rotation.y = Math.PI / 2; girth.scale.set(1, 0.9, 1); pivot.add(girth);
-  const collar = mesh(new THREE.TorusGeometry(0.34, 0.045, 8, 24), M.blackLeather, 0.78, 1.2, 0); collar.rotation.y = Math.PI / 2; collar.rotation.x = Math.PI * 0.12; collar.scale.set(1, 1.25, 1); pivot.add(collar);
-  const buckle = mesh(new THREE.BoxGeometry(0.05, 0.06, 0.04), M.brass, 0.78, 0.86, 0.0); pivot.add(buckle);
+  pivot.updateMatrixWorld(true);
+  const bones = {}; pivot.traverse((o) => { if (o.isBone) bones[o.name] = o; });
+  const attach = (obj, boneName) => { pivot.add(obj); obj.updateMatrixWorld(true); const b = bones[boneName]; if (b) b.attach(obj); return obj; };
+  // 部品は「骨 × 材質」ごとに 1 つのジオメトリに結合して描画命令を減らす（馬 1 頭 16 → 8 call。NPC の馬 8 頭にも付くため）
+  const buckets = new Map();
+  const _pm = new THREE.Matrix4(), _pq = new THREE.Quaternion(), _pe = new THREE.Euler(), _pp = new THREE.Vector3(), _ps = new THREE.Vector3();
+  const part = (geo, mat, bone, x, y, z, { rx = 0, ry = 0, rz = 0, order = 'XYZ', sx = 1, sy = 1, sz = 1 } = {}) => {
+    _pe.set(rx, ry, rz, order); _pq.setFromEuler(_pe); _pp.set(x, y, z); _ps.set(sx, sy, sz); _pm.compose(_pp, _pq, _ps); geo.applyMatrix4(_pm);
+    const key = bone + '|' + mat.uuid; let bk = buckets.get(key); if (!bk) { bk = { bone, mat, geos: [] }; buckets.set(key, bk); } bk.geos.push(geo);
+  };
+  // 輪: 半径 1 のトーラス（局所 XY 面）を y 半径 ry・z 半径 rz の楕円にして YZ 面（x に直交）へ。tilt は面を前へ倒す角（z 軸回り、最後に掛ける）
+  // ※ 1 回目の版は scale(1, ry, rz) で局所 x（= ワールド z 向きの半径）が 1m のままになり、輪が体から大きくはみ出た（shots/actor2/r1_carriage.png）
+  const ring = (ry, rz, tube, x, y, z, mat, bone, tilt = 0) => part(new THREE.TorusGeometry(1, tube, 6, 28), mat, bone, x, y, z, { ry: Math.PI / 2, rz: tilt, order: 'ZYX', sx: rz, sy: ry });
+  // 首輪（カラー）: 首の付け根を囲む楕円（上が前に傾く）+ 上端にハームの真鍮玉 2 つ
+  ring(0.34, 0.2, 0.05, 0.58, 1.55, 0, M.blackLeather, 'Neck1', 0.4);   // 上がき甲側（後ろ）、下が胸の前（肩の傾きに沿う）
+  // 腹帯（ガース）と鞍パッド: 前脚のすぐ後ろ
+  ring(0.345, 0.275, 0.022, -0.1, 1.23, 0, M.blackLeather, 'Torso2');
+  part(new THREE.BoxGeometry(0.34, 0.035, 0.36), M.blackLeather, 'Torso2', -0.1, 1.575, 0);
+  if (!lite) {   // NPC の馬（lite）は首輪と腹帯だけ（2 call）。本人の馬は全部（8 call）
+  for (const sz of [-1, 1]) part(new THREE.SphereGeometry(0.035, 8, 6), M.brass, 'Neck1', 0.67, 1.93, sz * 0.07);
+  part(new THREE.BoxGeometry(0.06, 0.03, 0.05), M.brass, 'Torso2', -0.1, 0.9, 0);
+  // 背帯（首輪 → 鞍パッド）と尻帯（鞍パッド → 尻）
+  part(new THREE.BoxGeometry(0.6, 0.02, 0.05), M.blackLeather, 'Torso3', 0.23, 1.66, 0, { rz: 0.25 });
+  part(new THREE.BoxGeometry(0.55, 0.02, 0.05), M.blackLeather, 'Torso', -0.42, 1.6, 0, { rz: -0.12 });
+  // 頭絡（ブライドル）: 鼻革・額革・頬革・ブリンカー（目隠し）・ハミ（銜）。手綱はハミへ
+  ring(0.13, 0.105, 0.012, 1.18, 1.65, 0, M.blackLeather, 'Head');
+  ring(0.2, 0.17, 0.012, 0.9, 1.9, 0, M.blackLeather, 'Head', 0.3);
+  for (const sz of [-1, 1]) {
+    part(new THREE.BoxGeometry(0.1, 0.13, 0.015), M.blackLeather, 'Head', 1.0, 1.95, sz * 0.165, { ry: sz * 0.35 });
+    part(new THREE.BoxGeometry(0.28, 0.018, 0.014), M.blackLeather, 'Head', 1.03, 1.78, sz * 0.13, { rz: -0.45 });
+    part(new THREE.TorusGeometry(0.03, 0.007, 5, 10), M.brass, 'Head', 1.2, 1.61, sz * 0.105);
+  }
+  }
+  for (const bk of buckets.values()) { const m = mesh(mergeGeometries(bk.geos, false), bk.mat); m.frustumCulled = false; attach(m, bk.bone); }
+  // 手綱の先（ハミの位置）と引き革（トレース）の付け根（首輪の下側の左右）: ワールド位置を毎フレーム読む
+  const bits = [-1, 1].map((sz) => { const o = new THREE.Object3D(); o.position.set(1.2, 1.61, sz * 0.105); return attach(o, 'Head'); });
+  const anchors = [-1, 1].map((sz) => { const o = new THREE.Object3D(); o.position.set(0.5, 1.28, sz * 0.26); return attach(o, 'Neck1'); });
+  // 蹄の骨（土ぼこりの発生位置）
+  const hooves = ['FFL', 'FFR', 'FFBL', 'FFBR'].map((n) => bones[n]).filter(Boolean);
   let current = 'Idle';
   return {
-    group: pivot, mixer, actions,
+    group: pivot, mixer, actions, bits, anchors, hooves,
     setGait(gait, speed, dt) {
       const spec = GAIT_ANIM[Math.max(0, Math.min(4, gait | 0))];
       const name = actions[spec.clip] ? spec.clip : 'Walk';
@@ -294,6 +401,7 @@ export function createCarriage(assets, { horseColors = ['white', 'brown'] } = {}
   driver.group.position.set(C.boxX - 0.05, C.boxSeatY - 0.02, 0);
   driver.group.scale.setScalar(1.0);
   driver.playOnly('Sitting');
+  driver.group.userData.keep = true;
   body.add(driver.group);
   const hat = new THREE.Group();
   hat.add(mesh(new THREE.CylinderGeometry(0.1, 0.105, 0.12, 16), M.hat, 0, 0.06, 0));
@@ -302,9 +410,40 @@ export function createCarriage(assets, { horseColors = ['white', 'brown'] } = {}
   root.add(hat);
   let headBone = null; driver.group.traverse((o) => { if (!headBone && o.isBone && /head/i.test(o.name)) headBone = o; });
 
-  // --- 手綱（御者の手 → 各馬の首）
-  const reinGeo = new THREE.BufferGeometry(); reinGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(4 * 3), 3));
-  const reins = new THREE.LineSegments(reinGeo, M.rein); reins.frustumCulled = false; root.add(reins);
+  // --- 客（動くもの担当 2026-11-10）: 後席に座る女性 + 帽子（g.ride.hatLost で帽子が消える）。後方カメラからいつも見える
+  const passenger = createPedestrianInner(assets, 3, { Dress: 0xe9d4c6, Hair: 0x5a3a22 });
+  passenger.group.userData.keep = true;
+  passenger.group.position.set(-0.9, C.floorY + 0.58, 0.12);
+  passenger.playOnly('Sitting');
+  body.add(passenger.group);
+  const pHat = new THREE.Group();
+  const strawMat = new THREE.MeshStandardMaterial({ color: 0xe8d9a8, roughness: 0.9 });
+  pHat.add(mesh(new THREE.CylinderGeometry(0.11, 0.12, 0.09, 14), strawMat, 0, 0.045, 0));
+  pHat.add(mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.012, 16), strawMat, 0, 0.0, 0));
+  pHat.add(mesh(new THREE.TorusGeometry(0.115, 0.012, 6, 16), M.redLeather, 0, 0.03, 0).rotateX(Math.PI / 2));
+  root.add(pHat);
+  let pHeadBone = null; passenger.group.traverse((o) => { if (!pHeadBone && o.isBone && /head/i.test(o.name)) pHeadBone = o; });
+
+  // --- 手綱（御者の手 → 各馬のハミ）と引き革（首輪 → 轅の横木）。2026-11-10: 線 1 本ではなく細い円柱（近景で見える）
+  const strapGeo = new THREE.CylinderGeometry(1, 1, 1, 5, 1); strapGeo.rotateX(Math.PI / 2); // 長さ方向を z に
+  const strapMat = new THREE.MeshStandardMaterial({ color: 0x1a1612, roughness: 0.8 });
+  const straps = []; // { m, from(out), to(out), r }
+  const mkStrap = (r) => { const m = new THREE.Mesh(strapGeo, strapMat); m.frustumCulled = false; m.castShadow = false; root.add(m); return m; };
+  const reinM = horses.map(() => [mkStrap(), mkStrap()]);   // 手 → 首輪の上（中継）→ ハミ の 2 本
+  const traceM = horses.map(() => [mkStrap(), mkStrap()]);  // 左右の引き革
+  const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _d = new THREE.Vector3();
+  function setStrap(m, a, b, r) {
+    _d.subVectors(b, a); const L = _d.length(); if (L < 1e-4) { m.visible = false; return; }
+    m.visible = true; m.position.copy(a).addScaledVector(_d, 0.5); m.scale.set(r, r, L); m.lookAt(root.localToWorld(_a.copy(b)));   // lookAt の目標はワールド座標
+  }
+  const hoofWas = horses.map((h) => h.hooves.map(() => false));
+  const _hp = new THREE.Vector3();
+  // 2026-11-10（スマホの重さ）: 動かない部品を材質ごとに結合。車体 ~55 → 8、車輪 4×17（スポーク 14 本が別 Mesh）→ 4×2、
+  // 車軸 3 → 1、轅 3 → 2、帽子 3 → 2。御者・客（スキン）と馬は残す。183 call → 約 30
+  for (const w of wheels) { w.g.userData.keep = true; collapseStatic(w.g); }
+  poleG.userData.keep = true; collapseStatic(poleG);
+  horsePair.userData.keep = true;
+  collapseStatic(body); collapseStatic(chassis); collapseStatic(hat); collapseStatic(pHat);
 
   // --- 影の無い画質用の「接地の黒丸」
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.0, depthWrite: false }));
@@ -314,7 +453,7 @@ export function createCarriage(assets, { horseColors = ['white', 'brown'] } = {}
   let wheelAngle = 0;
   const sway = { roll: 0, pitch: 0, rollV: 0, pitchV: 0 };
 
-  function update(player, dt, { blobShadow = false } = {}) {
+  function update(player, dt, { blobShadow = false, onHoof = null, hatLost = false } = {}) {
     const car = player.carriage, hr = player.horse;
     const speed = player.speed ?? Math.hypot(car.vx || 0, car.vz || 0);
     root.position.set(car.x, car.airborne || 0, car.z);
@@ -346,27 +485,43 @@ export function createCarriage(assets, { horseColors = ['white', 'brown'] } = {}
     sway.pitchV += ((targetPitch - sway.pitch) * k - sway.pitchV * c) * dt; sway.pitch += sway.pitchV * dt;
     const bob = (hr.gait >= 3 ? 0.005 : 0.003) * Math.sin((hr.phase || 0) * Math.PI * 2);
     body.rotation.x = sway.roll; body.rotation.z = sway.pitch; body.position.y = bob;
+    // 骨の行列を今の姿勢にしてから、帽子・手綱・引き革・蹄を読む（以前は 1 フレーム前の骨の位置だった）
+    root.updateMatrixWorld(true);
     // 帽子: 頭の骨の上
     if (headBone) {
       headBone.getWorldPosition(tmpH);
-      hat.position.copy(root.worldToLocal(tmpH.clone())); hat.position.y += 0.13;
+      hat.position.copy(root.worldToLocal(tmpH)); hat.position.y += 0.13;
       hat.rotation.set(0, 0, 0);
     }
-    // 手綱
-    const pos = reinGeo.attributes.position;
+    // 客の帽子: 頭の骨の上（帽子が飛んだら消す）
+    pHat.visible = !hatLost;
+    if (pHeadBone && pHat.visible) { pHeadBone.getWorldPosition(tmpH); pHat.position.copy(root.worldToLocal(tmpH)); pHat.position.y += 0.12; pHat.rotation.set(0, 0, 0); }
+    // 手綱: 御者の手 → 首輪の上（真鍮玉の間）→ ハミ。引き革: 首輪の左右 → 横木の端
     const hand = tmpW.set(C.boxX + 0.3, C.boxSeatY + 0.45, 0);
     horses.forEach((h, i) => {
-      tmpV.set(0.95, 1.35, 0).applyMatrix4(h.group.matrixWorld);
-      root.worldToLocal(tmpV);
-      pos.setXYZ(i * 2, hand.x, hand.y, hand.z + (i === 0 ? -0.12 : 0.12));
-      pos.setXYZ(i * 2 + 1, tmpV.x, tmpV.y, tmpV.z);
+      const side = i === 0 ? -1 : 1;
+      _a.set(hand.x, hand.y, hand.z + side * 0.12);
+      tmpV.set(0.62, 1.95, 0).applyMatrix4(h.group.matrixWorld); root.worldToLocal(tmpV);
+      setStrap(reinM[i][0], _a, tmpV, 0.012);
+      h.bits[0].getWorldPosition(_b); root.worldToLocal(_b); h.bits[1].getWorldPosition(tmpH); root.worldToLocal(tmpH); _b.lerp(tmpH, 0.5); _b.y += 0.02;
+      setStrap(reinM[i][1], tmpV, _b, 0.012);
+      h.anchors.forEach((an, k) => {
+        an.getWorldPosition(_a); root.worldToLocal(_a);
+        _b.set(0.3, 0, side * C.horseGap / 2 + (k === 0 ? -0.26 : 0.26)).applyMatrix4(poleG.matrix); // 横木（poleG ローカル x=0.3）の端 → chassis = root ローカル
+        setStrap(traceM[i][k], _a, _b, 0.016);
+      });
+      // 蹄の接地: 蹄の骨が 0.12m より下へ来た瞬間に土ぼこり（速さ 4 m/s 以上）
+      if (onHoof && speed > 4) h.hooves.forEach((bn, k) => {
+        bn.getWorldPosition(_hp);
+        const down = _hp.y < (car.airborne || 0) + 0.12;
+        if (down && !hoofWas[i][k]) onHoof(_hp.x, _hp.z, speed);
+        hoofWas[i][k] = down;
+      });
     });
-    pos.needsUpdate = true;
     blob.material.opacity = blobShadow ? 0.35 : 0.0;
-    root.updateMatrixWorld(true);
   }
 
-  return { group: root, body, horses, driver, update, wheels };
+  return { group: root, body, horses, driver, passenger, update, wheels };
 }
 
 // ============================================================================
@@ -393,8 +548,9 @@ function recolored(model, modelIndex, palette) {
 function createPedestrianInner(assets, modelIndex, palette) {
   const model = assets.people[modelIndex % assets.people.length];
   const pivot = SkeletonUtils.clone(model.pivot);
-  const mm = recolored(model, modelIndex, palette);
-  pivot.traverse((o) => { if (o.isMesh) { o.material = mm.get(o.material) || o.material; o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
+  // 2026-11-10: 部位ごとの Mesh（5〜6 call）を頂点色の 1 メッシュに。服の色はここで焼く（ジオメトリは (model, 色) ごとに共有）
+  mergeSkinned(pivot, SKIN_GEO_CACHE, 'ped:' + modelIndex + ':' + JSON.stringify(palette), (name, mat) => (palette[name] != null ? palette[name] : mat.color), PED_SKIN_MAT);
+  pivot.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
   const mixer = new THREE.AnimationMixer(pivot);
   const actions = {};
   for (const name of ['Idle', 'Walk', 'Run', 'Jump', 'Sitting', 'Death', 'Punch', 'Standing', 'Clapping']) {
@@ -416,10 +572,14 @@ function createPedestrianInner(assets, modelIndex, palette) {
 }
 
 export function createPedestrian(assets, look = 0) {
+  // 2026-11-10: sim の look は 0..9。main.js が id で散らして 0..17 を渡す（18 色）
   const pal = PED_PALETTE[look % PED_PALETTE.length];
   const modelIndex = pal.Dress ? 3 : [0, 1, 2][look % 3];
   const p = createPedestrianInner(assets, modelIndex, pal);
-  let lastState = null, frame = 0, lastX = null, lastZ = null, grow = 1, lastTick = 0, skipped = 0;
+  // 影の無い画質（low）用の足元の黒丸。影がある画質では出さない
+  const blob = blobShadowMesh(); blob.visible = false; p.group.add(blob);
+  p.group.name = 'ped';
+  let lastState = null, frame = 0, lastX = null, lastZ = null, grow = 1, lastTick = 0, skipped = 0, tumble = 0;
   // 賑わい 2026-10-03: sit（カフェ）/ idle・browse・watch（立ち止まる）/ perform（大道芸人: Jump をゆっくり繰り返す）
   const STATE_ANIM = { walk: 'Walk', cross: 'Walk', wait: 'Idle', flee: 'Run', dodge: 'Jump', fly: 'Jump', down: 'Death', angry: 'Punch', sit: 'Sitting', stand: 'Standing', clap: 'Clapping', idle: 'Idle', browse: 'Idle', watch: 'Idle', perform: 'Jump' };
   // 2026-10-03: フレームカリングを有効にする（以前は false で全員を毎フレーム描いていた）。スキンの外接球は
@@ -427,8 +587,9 @@ export function createPedestrian(assets, look = 0) {
   // 主ループ 2026-10-14: 部位ごと（シャツ・肌・ズボン…）の画面外判定をやめる。外接球を最初の姿勢で一度だけ計算するため、
   // 歩き・跳びで形が変わると一部の部位だけ省かれ「透明な人が混じる」（天才さんの指摘）。代わりに人1人まるごと距離で省く
   p.group.traverse((o) => { if (o.isSkinnedMesh) o.frustumCulled = false; });
-  function update(ped, dt, camDist = 0) {
-    p.group.visible = camDist < 120;
+  function update(ped, dt, camDist = 0, { blobShadow = false, farCut = 120 } = {}) {
+    p.group.visible = camDist < farCut;
+    blob.visible = blobShadow && camDist < 60 && (ped.y || 0) < 0.05;
     // 位置が一気に飛んだ（sim が遠くから近くの見えない所へ出し直した）→ 0.4 秒で伸び上がる
     const tick = ped._spawnTick || 0;
     if (lastX != null && (tick !== lastTick || Math.hypot(ped.x - lastX, ped.z - lastZ) > 12)) grow = 0;
@@ -436,7 +597,9 @@ export function createPedestrian(assets, look = 0) {
     if (grow < 1) { grow = Math.min(1, grow + dt * 2.5); const s = 0.05 + 0.95 * grow; p.group.scale.set(s, s, s); } else if (p.group.scale.x !== 1) p.group.scale.set(1, 1, 1);
     p.group.position.set(ped.x, ped.y || 0, ped.z);
     p.group.rotation.set(0, -ped.yaw, 0);
-    if (ped.state === 'fly') p.group.rotation.z = ped.spin || 0;
+    // 吹っ飛び: sim の spin（前転）に加えて、コミカルに横にもくるくる回る（流血・負傷の表現はしない）
+    if (ped.state === 'fly') { tumble += dt * 4.5; p.group.rotation.z = ped.spin || 0; p.group.rotation.x = Math.sin(tumble) * 0.6; }
+    else tumble = 0;
     if (ped.state !== lastState) {
       lastState = ped.state;
       const name = STATE_ANIM[ped.state] || 'Idle';
@@ -522,7 +685,7 @@ function createNpcFiaker(look = 0) {
   // 馬 2 頭
   const horses = [];
   if (A) {
-    L.horses.forEach((col, i) => { const h = createHorse(A, col); h.group.position.set(2.5, 0, (i === 0 ? -1 : 1) * C.horseGap / 2); g.add(h.group); horses.push(h); });
+    L.horses.forEach((col, i) => { const h = createHorse(A, col, { lite: true }); h.group.position.set(2.5, 0, (i === 0 ? -1 : 1) * C.horseGap / 2); g.add(h.group); horses.push(h); });
   }
   let wheelAngle = 0, lastX = null, lastZ = null, lastTick = 0, grow = 1;
   return {
@@ -547,7 +710,7 @@ function createNpcFiaker(look = 0) {
 export function createCar(kind = 'car', look = 0) {
   const M = mats();
   if (kind === 'fiaker') return createNpcFiaker(look);
-  const g = new THREE.Group();
+  const g = new THREE.Group(); g.name = kind;
   if (kind === 'tram') {
     const L = 34, W = 2.4, H = 3.5;
     for (let i = 0; i < 5; i++) {
@@ -558,6 +721,7 @@ export function createCar(kind = 'car', look = 0) {
       g.add(mesh(new THREE.BoxGeometry(L / 5 - 0.15, 0.3, W - 0.3), M.tramRoof, x, 3.15 + 0.2, 0));
     }
     g.add(mesh(new THREE.BoxGeometry(L, 0.3, W - 0.6), M.iron, 0, 0.2, 0));
+    collapseStatic(g);   // 21 → 5
     return { group: g, update(c) { g.position.set(c.x, 0, c.z); g.rotation.y = -c.yaw; } };
   }
   const paint = M.carPaint[kind] || M.carPaint.car;
@@ -569,16 +733,17 @@ export function createCar(kind = 'car', look = 0) {
   for (const [x, z] of [[1.4, 0.85], [1.4, -0.85], [-1.4, 0.85], [-1.4, -0.85]]) {
     const w = mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.22, 16), M.tire, x, 0.33, z); w.rotation.x = Math.PI / 2; g.add(w);
   }
-  const hz = [];
+  const hzMat = M.hazard.clone();   // 2026-11-10: 1 台 1 材質（4 灯を 1 Mesh に結合して点滅）
   for (const sz of [1, -1]) {
     g.add(mesh(new THREE.BoxGeometry(0.05, 0.15, 0.35), M.lampGlass, 2.25, 0.7, sz * 0.6, false));
-    const h = mesh(new THREE.BoxGeometry(0.05, 0.12, 0.2), M.hazard.clone(), 2.25, 0.7, sz * 0.85, false); g.add(h); hz.push(h);
-    const h2 = mesh(new THREE.BoxGeometry(0.05, 0.12, 0.3), M.hazard.clone(), -2.25, 0.7, sz * 0.7, false); g.add(h2); hz.push(h2);
+    g.add(mesh(new THREE.BoxGeometry(0.05, 0.12, 0.2), hzMat, 2.25, 0.7, sz * 0.85, false));
+    g.add(mesh(new THREE.BoxGeometry(0.05, 0.12, 0.3), hzMat, -2.25, 0.7, sz * 0.7, false));
   }
   if (kind === 'taxi') {
     g.add(mesh(new THREE.BoxGeometry(0.5, 0.12, 0.12), M.sign, -0.2, 1.56, 0));
     g.add(mesh(new THREE.BoxGeometry(0.36, 0.06, 0.125), M.signText, -0.2, 1.56, 0, false));
   }
+  collapseStatic(g);   // 15〜17 Mesh → 材質の数（5〜7）
   let t = 0, lastX = null, lastZ = null, lastTick = 0, grow = 1;
   return {
     group: g,
@@ -591,7 +756,7 @@ export function createCar(kind = 'car', look = 0) {
       g.position.set(c.x, 0, c.z); g.rotation.y = -c.yaw;
       t += dt;
       const on = c.hazard && Math.floor(t * 2.5) % 2 === 0;
-      for (const h of hz) h.material.emissiveIntensity = on ? 2.0 : 0.0;
+      hzMat.emissiveIntensity = on ? 2.0 : 0.0;
     },
   };
 }

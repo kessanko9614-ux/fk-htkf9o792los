@@ -16,6 +16,9 @@ export const CAM = {
   heightStiffness: 4.0,
   // 2026-10-14 見た目: 走りの担当が最高速を 13→17.0 m/s（61 km/h）に確定。FOV と揺れの基準を 17 m/s にする（13 で 78° に張り付かない）
   fovBase: 60, fovMax: 78, maxSpeed: 17.0,
+  // 動くもの担当 2026-11-10（全力時の速度感、控えめ）: 全力でカメラを少し下げ（5.2 → 4.6m）、注視点を少し先へ（9 → 11m）。
+  // 低く・先を見るほど路面が速く流れて見える。FOV の効きは速さの 1.6 乗（2 乗より中速域から少し開く）
+  speedDropHeight: 0.6, speedLookAhead: 2.0, fovPow: 1.6,
   // 2026-10-03 主ループ: 1.8°/(m/s²) を lateralG に毎フレーム即掛けしていたため、通常のコーナリング（横G 3〜5 m/s²）でも
   // 5〜9° 傾き、さらに lateralG 自体の1フレームごとのノイズがそのままカメラの傾きのブレになっていた
   // （「馬車が左右揺れてる」の一因。sim/carriage.js の横滑り計算が低速域で振動する既知の問題と合わさると特に目立つ。
@@ -135,14 +138,16 @@ export function createFollowCamera(camera, opts = {}) {
 
   function forwardOf(yaw) { return fwd.set(Math.cos(yaw), 0, Math.sin(yaw)); }
 
-  function idealPos(player, out) {
+  function idealPos(player, out, dt = 1 / 60) {
     const c = player.carriage;
     // 向きは少し遅らせる（急な切り返しでカメラが振り回されない）
     if (!smoothYaw.init) { smoothYaw.v = c.yaw; smoothYaw.init = true; }
     let d = c.yaw - smoothYaw.v; d = Math.atan2(Math.sin(d), Math.cos(d));
-    smoothYaw.v += d * 0.5;
+    // 動くもの担当 2026-11-10: 以前は「毎フレーム差の半分」で、30fps だと 60fps の倍の時間がかかった。時定数 24ms（60fps で半分）の一次遅れにして fps に依らない
+    smoothYaw.v += d * (dt > 0 ? 1 - Math.exp(-dt / 0.024) : 1);
     forwardOf(smoothYaw.v);
-    out.set(c.x, 0, c.z).addScaledVector(fwd, -P.dist); out.y = P.height;
+    const r = THREE.MathUtils.clamp((player.speed || 0) / P.maxSpeed, 0, 1);
+    out.set(c.x, 0, c.z).addScaledVector(fwd, -P.dist); out.y = P.height - P.speedDropHeight * r * r;
     return out;
   }
 
@@ -173,7 +178,7 @@ export function createFollowCamera(camera, opts = {}) {
     const r = THREE.MathUtils.clamp((player.speed || 0) / P.maxSpeed, 0, 1);
     if (shake) { camera.position.x += shake.x || 0; camera.position.y += shake.y || 0; camera.position.z += shake.z || 0; }
     forwardOf(c.yaw);
-    look.set(c.x, P.lookHeight, c.z).addScaledVector(fwd, P.lookAhead);
+    look.set(c.x, P.lookHeight, c.z).addScaledVector(fwd, P.lookAhead + P.speedLookAhead * r * r);
     camera.lookAt(look);
     // 傾きはなめらかに追従させ、上限で切る（lateralG の1フレームごとのノイズがそのままカメラの揺れになるのを防ぐ）
     const rollTargetDeg = THREE.MathUtils.clamp(-(player.lateralG || 0) * P.rollPerG, -P.rollMaxDeg, P.rollMaxDeg);
@@ -182,7 +187,7 @@ export function createFollowCamera(camera, opts = {}) {
     const roll = THREE.MathUtils.degToRad(rollShown) + (shake?.roll || 0);
     camera.rotateZ(roll);
     // FOV は速さの 2 乗で効かせる
-    const fovTarget = THREE.MathUtils.lerp(P.fovBase, P.fovMax, r * r);
+    const fovTarget = THREE.MathUtils.lerp(P.fovBase, P.fovMax, Math.pow(r, P.fovPow));
     fov += (fovTarget - fov) * (dt > 0 ? 1 - Math.exp(-4 * dt) : 1);
     if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
   }
@@ -190,7 +195,7 @@ export function createFollowCamera(camera, opts = {}) {
   function update(dt, player, { shake = null } = {}) {
     dt = Math.min(dt, 1 / 30);
     t += dt;
-    idealPos(player, target);
+    idealPos(player, target, dt);
     // 主ループ 2026-10-02: 減衰を「目標の速さとの差」にかける。以前はカメラ自身の速さにかけていたため、
     // 一定速度で走るあいだ速さに比例した遅れが残り（全力 13 m/s で約 8m）、馬車が遠くに小さく見えていた
     if (!update._prev) update._prev = target.clone();
