@@ -1,5 +1,0 @@
-# 素材の本体（21MB）は会社リポジトリに入れない。入手元とURLは ../research/tech-assets.md、ライセンスは LICENSES.md
-*.glb
-*.hdr
-*.jpg
-*.png
