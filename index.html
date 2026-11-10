@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta name="robots" content="noindex,nofollow,noarchive">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Fiaker Rush — フィアカー・ラッシュ</title>
+<script>
+// 主ループ 2026-10-03: 起動に失敗したら読み込み画面にエラーを出す（スマホで「開けない」の原因を画面で見られるように）
+(function () {
+  function show(msg) {
+    var el = document.getElementById('loading');
+    if (!el) { document.addEventListener('DOMContentLoaded', function () { show(msg); }); return; }
+    el.style.flexDirection = 'column'; el.style.letterSpacing = '0.02em'; el.style.fontSize = '14px'; el.style.padding = '24px'; el.style.textAlign = 'center';
+    el.classList.remove('hide');
+    el.innerHTML = '<div style="font-size:18px;margin-bottom:12px">読み込みに失敗しました</div><div style="font-family:monospace;word-break:break-all;opacity:.85"></div>';
+    el.lastChild.textContent = String(msg).slice(0, 400);
+  }
+  window.addEventListener('error', function (e) { show((e.message || 'error') + (e.filename ? ' @ ' + e.filename.split('/').pop() + ':' + e.lineno : '')); });
+  window.addEventListener('unhandledrejection', function (e) { var r = e.reason; show((r && (r.message || r.type)) || String(r)); });
+  window.FK_SHOW_ERROR = show;
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500&family=Barlow+Semi+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./ui/hud.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d0c0b; overflow: hidden; touch-action: none; }
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #efe6d0; font-family: "Cormorant Garamond", serif; font-size: 22px; letter-spacing: 0.3em; background: #0d0c0b; z-index: 40; transition: opacity 0.4s; }
+  #loading.hide { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<!-- HUD: ui/hud.js の createHUD(root) が中身を組む -->
+<div id="hud" class="hud"></div>
+<div id="title" class="title-card"><div class="h">フィアカー・ラッシュ<small>Fiaker Rush · Wien</small></div><div class="hint"><b>↑</b> 鞭で走り出す　<b>←→</b> 曲がる　<b>Space</b> ドリフト　<b>R</b> やり直し</div></div>
+<div id="result" class="result"><div class="box">
+  <div class="label">Schicht beendet · シフト終了</div>
+  <div class="score" id="res-score">0</div>
+  <div class="row"><span>運んだ客</span><b id="res-rides">0</b></div>
+  <div class="row"><span>最高の一件</span><b id="res-best">—</b></div>
+  <div class="row"><span>弁償の合計</span><b id="res-damage">¥0</b></div>
+  <button class="again" id="res-retry" type="button">もう1回<small>Noch einmal · R</small></button>
+  <button class="other" id="res-newseed" type="button">別の街で走る</button>
+</div></div>
+<div id="loading">WIEN · LADEN …</div>
+<!-- 起動。main.js はループ担当（別担当）。render/ と ui/ はここから import される -->
+<script type="module" src="./main.js"></script>
+</body>
+</html>
